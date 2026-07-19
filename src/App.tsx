@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { CheckIcon, CloseIcon, GripIcon } from "./icons";
+import { CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
 import { reminderApi } from "./reminderApi";
-import { buildTimeSlots, formatTime, nextFiveMinuteSlot } from "./time";
+import { SettingsDialog } from "./SettingsDialog";
+import { loadSettings, saveSettings } from "./settings";
+import { buildTimeSlots, formatTime, nextIntervalSlot } from "./time";
 import type { DragPayload, Reminder } from "./types";
 import { UpdateDialog } from "./UpdateDialog";
 import { updateApi } from "./updateApi";
@@ -10,7 +12,7 @@ import "./styles.css";
 
 const REFRESH_INTERVAL = 15_000;
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1_000;
-const SLOT_COUNT = 19;
+const TIMELINE_DURATION_MINUTES = 90;
 
 type PointerDrag = {
   payload: DragPayload;
@@ -63,16 +65,24 @@ export default function App() {
   const [dragPosition, setDragPosition] = useState<DragPosition | null>(null);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [settings, setSettings] = useState(loadSettings);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<Awaited<ReturnType<typeof updateApi.check>>>(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const timelineRef = useRef<HTMLDivElement>(null);
   const activeDragRef = useRef<PointerDrag | null>(null);
   const dragTargetRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
   const dismissedUpdateRef = useRef<string | null>(null);
 
-  const slots = useMemo(() => buildTimeSlots(now, SLOT_COUNT), [now]);
+  const pendingTimestamps = useMemo(
+    () => reminders.filter((reminder) => !reminder.completed).map((reminder) => reminder.scheduledAt),
+    [reminders],
+  );
+  const slots = useMemo(
+    () => buildTimeSlots(now, settings.slotInterval, TIMELINE_DURATION_MINUTES, pendingTimestamps),
+    [now, pendingTimestamps, settings.slotInterval],
+  );
   const remindersByTime = useMemo(() => {
     const map = new Map<number, Reminder[]>();
     for (const reminder of reminders) {
@@ -106,6 +116,11 @@ export default function App() {
     const timer = window.setTimeout(() => setMessage(""), 2400);
     return () => window.clearTimeout(timer);
   }, [message]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = settings.theme;
+    saveSettings(settings);
+  }, [settings]);
 
   useEffect(() => {
     let disposed = false;
@@ -233,11 +248,6 @@ export default function App() {
     setDragOver(target);
     setDragPosition({ x: event.clientX, y: event.clientY, label: drag.label });
 
-    const timeline = timelineRef.current;
-    if (!timeline) return;
-    const bounds = timeline.getBoundingClientRect();
-    if (event.clientY < bounds.top + 44) timeline.scrollBy({ top: -16 });
-    else if (event.clientY > bounds.bottom - 44) timeline.scrollBy({ top: 16 });
   };
 
   const finishPointerDrag = (event: ReactPointerEvent<HTMLElement>, cancelled = false) => {
@@ -255,7 +265,7 @@ export default function App() {
     else void createAt(target);
   };
 
-  const scheduleNext = () => void createAt(nextFiveMinuteSlot(Date.now()));
+  const scheduleNext = () => void createAt(nextIntervalSlot(Date.now(), settings.slotInterval));
 
   return (
     <main
@@ -266,7 +276,12 @@ export default function App() {
     >
       <header className="utility-header">
         <h1>Remind me</h1>
-        <kbd title="Global shortcut">Ctrl Alt R</kbd>
+        <div className="utility-actions">
+          <kbd title="Global shortcut">Ctrl Alt R</kbd>
+          <button type="button" className="icon-button" onClick={() => setSettingsOpen(true)} aria-label="Open settings">
+            <SettingsIcon size={17} />
+          </button>
+        </div>
       </header>
 
       <section className="composer" aria-label="New reminder">
@@ -294,7 +309,7 @@ export default function App() {
             if (!saving) scheduleNext();
           }}
           disabled={saving}
-          aria-label="Drag to a time, or click to schedule at the next five-minute slot"
+          aria-label={`Drag to a time, or click to schedule at the next ${settings.slotInterval}-minute slot`}
         >
           <GripIcon size={18} />
         </button>
@@ -302,7 +317,7 @@ export default function App() {
 
       <section className="timeline-section" aria-labelledby="timeline-title">
         <h2 id="timeline-title">Next 90 min</h2>
-        <div ref={timelineRef} className="timeline" role="list" aria-label="Five-minute reminder slots">
+        <div className="timeline" role="list" aria-label={`${settings.slotInterval}-minute reminder slots`}>
           <div className="now-line" aria-hidden="true"><span /></div>
           {slots.map((slot) => {
             const slotReminders = remindersByTime.get(slot.timestamp) ?? [];
@@ -359,6 +374,13 @@ export default function App() {
           installing={installingUpdate}
           onInstall={() => void installUpdate()}
           onLater={dismissUpdate}
+        />
+      )}
+      {settingsOpen && (
+        <SettingsDialog
+          settings={settings}
+          onChange={setSettings}
+          onClose={() => setSettingsOpen(false)}
         />
       )}
       <div className={`toast${message ? " is-visible" : ""}`} role="status" aria-live="polite">{message}</div>
