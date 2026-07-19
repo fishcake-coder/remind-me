@@ -32,8 +32,8 @@ VIAddVersionKey /LANG=1033 "ProductName" "Remind Me"
 VIAddVersionKey /LANG=1033 "FileDescription" "Remind Me universal Windows installer"
 VIAddVersionKey /LANG=1033 "FileVersion" "${VERSION}"
 VIAddVersionKey /LANG=1033 "ProductVersion" "${VERSION}"
-VIAddVersionKey /LANG=1033 "CompanyName" "Moses"
-VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Moses"
+VIAddVersionKey /LANG=1033 "CompanyName" "Fishcake Software"
+VIAddVersionKey /LANG=1033 "LegalCopyright" "Copyright (c) 2026 Fishcake Software"
 
 Section
   InitPluginsDir
