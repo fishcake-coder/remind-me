@@ -101,8 +101,10 @@ jobs:
           args: --target ${{ matrix.target }}
 
   assemble-and-publish:
-    needs: build-windows
+    needs: [validate-version, build-windows]
     runs-on: windows-latest
+    env:
+      RELEASE_ID: ${{ needs.validate-version.outputs.release_id }}
     steps:
       - uses: actions/checkout@v6
       - name: Install NSIS
@@ -123,7 +125,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/$env:RELEASE_ID" | ConvertFrom-Json
           $x64Installer = @(Get-ChildItem universal-input -Filter "*_x64-setup.exe" -File)
           $arm64Installer = @(Get-ChildItem universal-input -Filter "*_arm64-setup.exe" -File)
           $x64Signature = @(Get-ChildItem universal-input -Filter "*_x64-setup.exe.sig" -File)
