@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require matching versions
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const packageVersion = require("./package.json").version;
+          const tauriVersion = JSON.parse(fs.readFileSync("src-tauri/tauri.conf.json", "utf8")).version;
+          const cargo = fs.readFileSync("src-tauri/Cargo.toml", "utf8");
+          const cargoVersion = cargo.match(/^version\s*=\s*"([^"]+)"/m)?.[1];
+          const tagVersion = process.env.GITHUB_REF_NAME.replace(/^v/, "");
+          const versions = { packageVersion, tauriVersion, cargoVersion, tagVersion };
+          if (!/^\d+\.\d+\.\d+$/.test(tagVersion)) {
+            console.error(`Tag ${process.env.GITHUB_REF_NAME} is not in vMAJOR.MINOR.PATCH form.`);
+            process.exit(1);
+          }
+          if (new Set(Object.values(versions)).size !== 1) {
+            console.error("Version mismatch:", versions);
+            process.exit(1);
+          }
+          console.log(`Validated version ${tagVersion}`);
+          NODE
+
+  build-windows:
+    needs: validate-version
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+          - runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build and upload signed installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: Remind Me v__VERSION__
+          releaseDraft: true
+          prerelease: false
+          generateReleaseNotes: true
+          updaterJsonPreferNsis: true
+          args: --target ${{ matrix.target }}
+
+  publish-release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
