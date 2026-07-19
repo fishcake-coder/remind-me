@@ -42,11 +42,18 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id 2>/dev/null || true)"
-          if [ -z "$release_id" ]; then
-            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "Remind Me $GITHUB_REF_NAME"
-            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id)"
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq '.id // empty' 2>/dev/null || true)"
+          if [[ ! "$release_id" =~ ^[0-9]+$ ]]; then
+            release_id="$(gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+              -f tag_name="$GITHUB_REF_NAME" \
+              -f name="Remind Me $GITHUB_REF_NAME" \
+              -F draft=true \
+              -F prerelease=false \
+              -F generate_release_notes=true \
+              --jq .id)"
           fi
+          [[ "$release_id" =~ ^[0-9]+$ ]]
+          test "$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq .tag_name)" = "$GITHUB_REF_NAME"
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
   build-windows:
