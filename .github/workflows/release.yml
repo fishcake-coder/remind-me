@@ -75,11 +75,36 @@ jobs:
           updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }}
 
-  publish-release:
+  assemble-and-publish:
     needs: build-windows
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
-      - name: Publish completed release
+      - uses: actions/checkout@v6
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis --no-progress -y
+      - name: Download native installers
+        shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          New-Item -ItemType Directory -Force universal-input | Out-Null
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern "Remind.Me_*_x64-setup.exe" --dir universal-input
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern "Remind.Me_*_arm64-setup.exe" --dir universal-input
+      - name: Build universal installer
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          $x64 = (Get-ChildItem universal-input -Filter "*_x64-setup.exe" -File).FullName
+          $arm64 = (Get-ChildItem universal-input -Filter "*_arm64-setup.exe" -File).FullName
+          $output = Join-Path $env:GITHUB_WORKSPACE "Remind.Me-setup.exe"
+          $icon = Join-Path $env:GITHUB_WORKSPACE "src-tauri\icons\icon.ico"
+          & "${env:ProgramFiles(x86)}\NSIS\makensis.exe" "/DVERSION=$version" "/DX64_INSTALLER=$x64" "/DARM64_INSTALLER=$arm64" "/DOUTPUT_FILE=$output" "/DICON_FILE=$icon" installer\universal.nsi
+          if ($LASTEXITCODE -ne 0) { throw "Universal installer compilation failed" }
+      - name: Upload universal installer and publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload $env:GITHUB_REF_NAME Remind.Me-setup.exe --repo $env:GITHUB_REPOSITORY --clobber
+          gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest

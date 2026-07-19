@@ -1,6 +1,6 @@
 [package]
 name = "remind-me"
-version = "1.1.0"
+version = "1.1.1"
 description = "A fast, lightweight reminder app for Windows"
 authors = ["Moses"]
 edition = "2021"
