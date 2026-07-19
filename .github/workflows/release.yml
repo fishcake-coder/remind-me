@@ -11,6 +11,8 @@ permissions:
 jobs:
   validate-version:
     runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
     steps:
       - uses: actions/checkout@v6
       - name: Require matching versions
@@ -34,12 +36,24 @@ jobs:
           }
           console.log(`Validated version ${tagVersion}`);
           NODE
+      - name: Create or reuse draft release
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id 2>/dev/null || true)"
+          if [ -z "$release_id" ]; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "Remind Me $GITHUB_REF_NAME"
+            release_id="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$GITHUB_REF_NAME" --jq .id)"
+          fi
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
   build-windows:
     needs: validate-version
     strategy:
       fail-fast: false
-      max-parallel: 1
+      max-parallel: 2
       matrix:
         include:
           - runner: windows-latest
@@ -73,11 +87,9 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: v__VERSION__
-          releaseName: Remind Me v__VERSION__
-          releaseDraft: true
-          prerelease: false
-          generateReleaseNotes: true
+          releaseId: ${{ needs.validate-version.outputs.release_id }}
+          uploadUpdaterJson: false
+          retryAttempts: 3
           updaterJsonPreferNsis: true
           args: --target ${{ matrix.target }}
 
@@ -97,6 +109,52 @@ jobs:
           New-Item -ItemType Directory -Force universal-input | Out-Null
           gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern "Remind.Me_*_x64-setup.exe" --dir universal-input
           gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern "Remind.Me_*_arm64-setup.exe" --dir universal-input
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern "Remind.Me_*_x64-setup.exe.sig" --dir universal-input
+          gh release download $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --pattern "Remind.Me_*_arm64-setup.exe.sig" --dir universal-input
+      - name: Assemble and validate updater manifest
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:GITHUB_REF_NAME" | ConvertFrom-Json
+          $x64Installer = @(Get-ChildItem universal-input -Filter "*_x64-setup.exe" -File)
+          $arm64Installer = @(Get-ChildItem universal-input -Filter "*_arm64-setup.exe" -File)
+          $x64Signature = @(Get-ChildItem universal-input -Filter "*_x64-setup.exe.sig" -File)
+          $arm64Signature = @(Get-ChildItem universal-input -Filter "*_arm64-setup.exe.sig" -File)
+          if ($x64Installer.Count -ne 1 -or $arm64Installer.Count -ne 1 -or $x64Signature.Count -ne 1 -or $arm64Signature.Count -ne 1) {
+            throw "Expected exactly one installer and signature for each Windows architecture"
+          }
+
+          function Get-AssetUrl([string]$name) {
+            $asset = @($release.assets | Where-Object name -eq $name)
+            if ($asset.Count -ne 1) { throw "Release asset is missing or ambiguous: $name" }
+            return "https://api.github.com/repos/$env:GITHUB_REPOSITORY/releases/assets/$($asset[0].id)"
+          }
+
+          $x64 = [ordered]@{
+            signature = (Get-Content -Raw $x64Signature[0].FullName).Trim()
+            url = Get-AssetUrl $x64Installer[0].Name
+          }
+          $arm64 = [ordered]@{
+            signature = (Get-Content -Raw $arm64Signature[0].FullName).Trim()
+            url = Get-AssetUrl $arm64Installer[0].Name
+          }
+          $manifest = [ordered]@{
+            version = $env:GITHUB_REF_NAME.TrimStart("v")
+            notes = [string]$release.body
+            pub_date = [DateTime]::UtcNow.ToString("o")
+            platforms = [ordered]@{
+              "windows-x86_64" = $x64
+              "windows-x86_64-nsis" = $x64
+              "windows-aarch64" = $arm64
+              "windows-aarch64-nsis" = $arm64
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 latest.json
+          $validated = Get-Content -Raw latest.json | ConvertFrom-Json
+          if (-not $validated.platforms."windows-x86_64-nsis" -or -not $validated.platforms."windows-aarch64-nsis") {
+            throw "Updater manifest does not contain both NSIS architectures"
+          }
       - name: Build universal installer
         shell: pwsh
         run: |
@@ -112,5 +170,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload $env:GITHUB_REF_NAME Remind.Me-setup.exe --repo $env:GITHUB_REPOSITORY --clobber
+          gh release upload $env:GITHUB_REF_NAME Remind.Me-setup.exe latest.json --repo $env:GITHUB_REPOSITORY --clobber
           gh release edit $env:GITHUB_REF_NAME --repo $env:GITHUB_REPOSITORY --draft=false --latest

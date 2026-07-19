@@ -10,7 +10,7 @@ export function floorToInterval(timestamp: number, intervalMinutes: number): num
 
 export function nextIntervalSlot(timestamp: number, intervalMinutes: number): number {
   const interval = intervalMinutes * ONE_MINUTE;
-  return Math.ceil(timestamp / interval) * interval;
+  return Math.floor(timestamp / interval) * interval + interval;
 }
 
 export function floorToFiveMinutes(timestamp: number): number {
@@ -36,7 +36,7 @@ export function buildTimeSlots(
   includedTimestamps: number[] = [],
 ): TimeSlot[] {
   const interval = intervalMinutes * ONE_MINUTE;
-  const start = floorToInterval(now, intervalMinutes);
+  const start = nextIntervalSlot(now, intervalMinutes);
   const end = now + durationMinutes * ONE_MINUTE;
   const timestamps = new Set<number>();
 
@@ -44,7 +44,7 @@ export function buildTimeSlots(
     timestamps.add(timestamp);
   }
   for (const timestamp of includedTimestamps) {
-    if (timestamp >= start && timestamp <= end) timestamps.add(timestamp);
+    if (timestamp > now && timestamp <= end) timestamps.add(timestamp);
   }
 
   return [...timestamps]
@@ -52,6 +52,5 @@ export function buildTimeSlots(
     .map((timestamp) => ({
       timestamp,
       label: formatTime(timestamp),
-      isPast: timestamp < now,
     }));
 }

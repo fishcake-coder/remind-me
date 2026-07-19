@@ -55,17 +55,11 @@ export const reminderApi = {
     return changed;
   },
 
-  async complete(id: string): Promise<Reminder> {
-    if (inTauri) return invoke<Reminder>("complete_reminder", { id });
-    let changed: Reminder | undefined;
-    const reminders = readPreview().map((reminder) => {
-      if (reminder.id !== id) return reminder;
-      changed = { ...reminder, completed: true };
-      return changed;
-    });
-    if (!changed) throw new Error("Reminder not found");
-    writePreview(reminders);
-    return changed;
+  async complete(id: string): Promise<void> {
+    if (inTauri) return invoke<void>("complete_reminder", { id });
+    const reminders = readPreview();
+    if (!reminders.some((reminder) => reminder.id === id)) throw new Error("Reminder not found");
+    writePreview(reminders.filter((reminder) => reminder.id !== id));
   },
 
   async remove(id: string): Promise<void> {

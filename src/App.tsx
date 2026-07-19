@@ -1,16 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
 import { reminderApi } from "./reminderApi";
 import { SettingsDialog } from "./SettingsDialog";
+import type { ManualUpdateStatus } from "./SettingsDialog";
 import { loadSettings, saveSettings } from "./settings";
+import type { NotificationSound } from "./settings";
+import { soundApi } from "./soundApi";
 import { buildTimeSlots, formatTime, nextIntervalSlot } from "./time";
 import type { DragPayload, Reminder } from "./types";
 import { UpdateDialog } from "./UpdateDialog";
 import { updateApi } from "./updateApi";
+import type { AvailableUpdate } from "./updateApi";
 import "./styles.css";
 
 const REFRESH_INTERVAL = 15_000;
+const CLOCK_INTERVAL = 1_000;
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1_000;
 const TIMELINE_DURATION_MINUTES = 90;
 
@@ -67,13 +73,19 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [settings, setSettings] = useState(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [availableUpdate, setAvailableUpdate] = useState<Awaited<ReturnType<typeof updateApi.check>>>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
+  const [manualUpdateStatus, setManualUpdateStatus] = useState<ManualUpdateStatus>("idle");
+  const [soundSaving, setSoundSaving] = useState(false);
+  const [timelineAdvancing, setTimelineAdvancing] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
   const activeDragRef = useRef<PointerDrag | null>(null);
   const dragTargetRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
   const dismissedUpdateRef = useRef<string | null>(null);
+  const updateCheckRef = useRef<Promise<AvailableUpdate | null> | null>(null);
+  const previousSlotsRef = useRef<number[]>([]);
 
   const pendingTimestamps = useMemo(
     () => reminders.filter((reminder) => !reminder.completed).map((reminder) => reminder.scheduledAt),
@@ -104,12 +116,47 @@ export default function App() {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => {
-      setNow(Date.now());
-      void refresh();
-    }, REFRESH_INTERVAL);
-    return () => window.clearInterval(timer);
+    const clockTimer = window.setInterval(() => setNow(Date.now()), CLOCK_INTERVAL);
+    const refreshTimer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
+    return () => {
+      window.clearInterval(clockTimer);
+      window.clearInterval(refreshTimer);
+    };
   }, [refresh]);
+
+  useEffect(() => {
+    if (!reminderApi.isNative) return;
+    let unlisten: (() => void) | undefined;
+    void listen("reminders-changed", () => void refresh())
+      .then((stopListening) => {
+        unlisten = stopListening;
+      })
+      .catch(() => undefined);
+    return () => unlisten?.();
+  }, [refresh]);
+
+  useLayoutEffect(() => {
+    const previous = previousSlotsRef.current;
+    const current = slots.map((slot) => slot.timestamp);
+    const previousFirst = previous[0];
+    const currentFirst = current[0];
+    let animationFrame: number | undefined;
+
+    if (previousFirst !== undefined && currentFirst !== undefined && currentFirst > previousFirst) {
+      const removedCount = previous.filter((timestamp) => timestamp < currentFirst).length;
+      const timeline = timelineRef.current;
+      if (timeline && timeline.scrollTop > 1) {
+        timeline.scrollTop = Math.max(0, timeline.scrollTop - removedCount * 39);
+      } else {
+        setTimelineAdvancing(true);
+        animationFrame = window.requestAnimationFrame(() => setTimelineAdvancing(false));
+      }
+    }
+    previousSlotsRef.current = current;
+    return () => {
+      if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame);
+    };
+  }, [slots]);
 
   useEffect(() => {
     if (!message) return;
@@ -124,26 +171,52 @@ export default function App() {
 
   useEffect(() => {
     let disposed = false;
-
-    const checkForUpdates = async () => {
-      try {
-        const update = await updateApi.check();
-        if (!disposed && update && update.version !== dismissedUpdateRef.current) {
-          setAvailableUpdate(update);
-        }
-      } catch {
-        // Update checks are deliberately silent so offline use is never interrupted.
-      }
-    };
-
-    const startupTimer = window.setTimeout(() => void checkForUpdates(), 1_500);
-    const interval = window.setInterval(() => void checkForUpdates(), UPDATE_CHECK_INTERVAL);
+    void soundApi.get()
+      .then((notificationSound) => {
+        if (!disposed) setSettings((current) => ({ ...current, notificationSound }));
+      })
+      .catch(() => {
+        if (!disposed) setMessage("Could not load notification sound");
+      });
     return () => {
       disposed = true;
+    };
+  }, []);
+
+  const checkForUpdates = useCallback(async (manual: boolean) => {
+    if (manual) setManualUpdateStatus("checking");
+    let checkPromise = updateCheckRef.current;
+    if (!checkPromise) {
+      checkPromise = updateApi.check();
+      updateCheckRef.current = checkPromise;
+    }
+
+    try {
+      const update = await checkPromise;
+      if (update && (manual || update.version !== dismissedUpdateRef.current)) {
+        setAvailableUpdate(update);
+        if (manual) {
+          setManualUpdateStatus("idle");
+          setSettingsOpen(false);
+        }
+      } else if (manual) {
+        setManualUpdateStatus("upToDate");
+      }
+    } catch {
+      if (manual) setManualUpdateStatus("error");
+    } finally {
+      if (updateCheckRef.current === checkPromise) updateCheckRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    const startupTimer = window.setTimeout(() => void checkForUpdates(false), 1_500);
+    const interval = window.setInterval(() => void checkForUpdates(false), UPDATE_CHECK_INTERVAL);
+    return () => {
       window.clearTimeout(startupTimer);
       window.clearInterval(interval);
     };
-  }, []);
+  }, [checkForUpdates]);
 
   const installUpdate = async () => {
     if (!availableUpdate || installingUpdate) return;
@@ -193,12 +266,33 @@ export default function App() {
 
   const complete = async (id: string) => {
     const before = reminders;
-    setReminders((current) => current.map((item) => item.id === id ? { ...item, completed: true } : item));
+    setReminders((current) => current.filter((item) => item.id !== id));
     try {
       await reminderApi.complete(id);
     } catch {
       setReminders(before);
       setMessage("Could not complete reminder");
+    }
+  };
+
+  const changeNotificationSound = async (notificationSound: NotificationSound) => {
+    if (soundSaving || notificationSound === settings.notificationSound) return;
+    setSoundSaving(true);
+    try {
+      await soundApi.set(notificationSound);
+      setSettings((current) => ({ ...current, notificationSound }));
+    } catch {
+      setMessage("Could not save notification sound");
+    } finally {
+      setSoundSaving(false);
+    }
+  };
+
+  const previewNotificationSound = async (notificationSound: NotificationSound) => {
+    try {
+      await soundApi.preview(notificationSound);
+    } catch {
+      setMessage("Could not play notification sound");
     }
   };
 
@@ -241,8 +335,7 @@ export default function App() {
     if (distance > 5) drag.moved = true;
 
     const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-slot-time]");
-    const validTarget = hovered?.dataset.slotPast !== "true";
-    const timestamp = hovered && validTarget ? Number(hovered.dataset.slotTime) : null;
+    const timestamp = hovered ? Number(hovered.dataset.slotTime) : null;
     const target = timestamp !== null && Number.isFinite(timestamp) ? timestamp : null;
     dragTargetRef.current = target;
     setDragOver(target);
@@ -317,18 +410,17 @@ export default function App() {
 
       <section className="timeline-section" aria-labelledby="timeline-title">
         <h2 id="timeline-title">Next 90 min</h2>
-        <div className="timeline" role="list" aria-label={`${settings.slotInterval}-minute reminder slots`}>
-          <div className="now-line" aria-hidden="true"><span /></div>
+        <div ref={timelineRef} className="timeline" role="list" aria-label={`${settings.slotInterval}-minute reminder slots`}>
+          <div className={`timeline-track${timelineAdvancing ? " is-advancing" : ""}`}>
           {slots.map((slot) => {
             const slotReminders = remindersByTime.get(slot.timestamp) ?? [];
             const highlighted = dragOver === slot.timestamp;
             return (
               <div
-                className={`time-slot${slot.isPast ? " is-past" : ""}${highlighted ? " is-target" : ""}`}
+                className={`time-slot${highlighted ? " is-target" : ""}`}
                 key={slot.timestamp}
                 role="listitem"
                 data-slot-time={slot.timestamp}
-                data-slot-past={slot.isPast}
               >
                 <time dateTime={new Date(slot.timestamp).toISOString()}>{slot.label}</time>
                 <span className="rail-dot" aria-hidden="true" />
@@ -343,7 +435,7 @@ export default function App() {
                     />
                   ))}
                   {highlighted && slotReminders.length === 0 && <span className="drop-hint">Drop here</span>}
-                  {!slot.isPast && slotReminders.length === 0 && !highlighted && (
+                  {slotReminders.length === 0 && !highlighted && (
                     <button
                       className="slot-quick-add"
                       type="button"
@@ -355,6 +447,7 @@ export default function App() {
               </div>
             );
           })}
+          </div>
         </div>
       </section>
 
@@ -379,7 +472,12 @@ export default function App() {
       {settingsOpen && (
         <SettingsDialog
           settings={settings}
+          manualUpdateStatus={manualUpdateStatus}
+          soundSaving={soundSaving}
           onChange={setSettings}
+          onSoundChange={(sound) => void changeNotificationSound(sound)}
+          onPreviewSound={(sound) => void previewNotificationSound(sound)}
+          onCheckForUpdates={() => void checkForUpdates(true)}
           onClose={() => setSettingsOpen(false)}
         />
       )}

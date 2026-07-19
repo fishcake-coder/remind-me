@@ -1,6 +1,6 @@
 [package]
 name = "remind-me"
-version = "1.2.0"
+version = "1.3.0"
 description = "A fast, lightweight reminder app for Windows"
 authors = ["Fishcake Software"]
 edition = "2021"
@@ -21,7 +21,11 @@ serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-opener = "2"
 tauri-plugin-process = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = { version = "2.10", default-features = false, features = ["native-tls", "zip"] }
 uuid = { version = "1", features = ["v4", "serde"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media_Audio"] }

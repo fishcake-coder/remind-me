@@ -13,5 +13,4 @@ export type DragPayload =
 export type TimeSlot = {
   timestamp: number;
   label: string;
-  isPast: boolean;
 };

@@ -1,16 +1,20 @@
 {
   "name": "remind-me",
   "private": true,
-  "version": "1.2.0",
+  "version": "1.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "licenses": "node scripts/generate-third-party-licenses.mjs",
+    "sounds": "node scripts/generate-sounds.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.ts",
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2.10.1",
     "react": "^19.0.0",
