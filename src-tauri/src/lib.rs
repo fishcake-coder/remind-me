@@ -197,9 +197,19 @@ fn move_reminder(
     scheduled_at: i64,
     state: State<'_, ReminderState>,
 ) -> Result<Reminder, String> {
+    update_reminder_record(id, None, scheduled_at, &state)
+}
+
+fn update_reminder_record(
+    id: Uuid,
+    title: Option<String>,
+    scheduled_at: i64,
+    state: &ReminderState,
+) -> Result<Reminder, String> {
     if scheduled_at < Utc::now().timestamp_millis() - 1_000 {
         return Err("Choose a time that has not passed".into());
     }
+    let clean_title = title.map(clean_title).transpose()?;
     let mut reminders = state
         .reminders
         .lock()
@@ -210,6 +220,9 @@ fn move_reminder(
         .find(|item| item.id == id && !item.completed)
         .ok_or_else(|| "Reminder not found".to_string())?;
     reminder.scheduled_at = scheduled_at;
+    if let Some(title) = clean_title {
+        reminder.title = title;
+    }
     reminder.completed = false;
     reminder.notified_at = None;
     let moved = reminder.clone();
@@ -217,6 +230,16 @@ fn move_reminder(
     state.persist(&updated)?;
     *reminders = updated;
     Ok(moved)
+}
+
+#[tauri::command]
+fn update_reminder(
+    id: Uuid,
+    title: String,
+    scheduled_at: i64,
+    state: State<'_, ReminderState>,
+) -> Result<Reminder, String> {
+    update_reminder_record(id, Some(title), scheduled_at, &state)
 }
 
 fn remove_reminder(id: Uuid, state: &ReminderState) -> Result<(), String> {
@@ -483,6 +506,7 @@ pub fn run() {
             list_reminders,
             create_reminder,
             move_reminder,
+            update_reminder,
             complete_reminder,
             delete_reminder,
             get_notification_sound,
@@ -629,6 +653,33 @@ mod tests {
 
         assert!(remove_reminder(reminder.id, &state).is_err());
         assert_eq!(state.reminders.lock().unwrap().len(), 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn editing_a_reminder_updates_its_title_and_time_atomically() {
+        let directory = std::env::temp_dir().join(format!("remind-me-test-{}", Uuid::new_v4()));
+        let data_file = directory.join("reminders.json");
+        let reminder = test_reminder(Utc::now().timestamp_millis() + 60_000);
+        let state = ReminderState {
+            reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
+            data_file: data_file.clone(),
+        };
+        let new_time = Utc::now().timestamp_millis() + 120_000;
+
+        let updated = update_reminder_record(
+            reminder.id,
+            Some("  Updated title  ".into()),
+            new_time,
+            &state,
+        )
+        .unwrap();
+
+        assert_eq!(updated.title, "Updated title");
+        assert_eq!(updated.scheduled_at, new_time);
+        let saved = read_reminders(&data_file).unwrap();
+        assert_eq!(saved[0].title, "Updated title");
+        assert_eq!(saved[0].scheduled_at, new_time);
         fs::remove_dir_all(directory).unwrap();
     }
 

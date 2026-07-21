@@ -55,6 +55,19 @@ export const reminderApi = {
     return changed;
   },
 
+  async update(id: string, title: string, scheduledAt: number): Promise<Reminder> {
+    if (inTauri) return invoke<Reminder>("update_reminder", { id, title, scheduledAt });
+    let changed: Reminder | undefined;
+    const reminders = readPreview().map((reminder) => {
+      if (reminder.id !== id) return reminder;
+      changed = { ...reminder, title, scheduledAt, completed: false, notifiedAt: null };
+      return changed;
+    });
+    if (!changed) throw new Error("Reminder not found");
+    writePreview(reminders);
+    return changed;
+  },
+
   async complete(id: string): Promise<void> {
     if (inTauri) return invoke<void>("complete_reminder", { id });
     const reminders = readPreview();

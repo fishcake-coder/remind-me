@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { dragAutoScrollVelocity } from "./drag";
 import { CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
 import { reminderApi } from "./reminderApi";
 import { SettingsDialog } from "./SettingsDialog";
@@ -8,7 +9,7 @@ import type { ManualUpdateStatus } from "./SettingsDialog";
 import { loadSettings, saveSettings } from "./settings";
 import type { NotificationSound } from "./settings";
 import { soundApi } from "./soundApi";
-import { buildTimeSlots, formatTime, nextIntervalSlot } from "./time";
+import { buildTimeSlots, formatTime, formatTimelineDuration, nextIntervalSlot, timelineDurationMinutes } from "./time";
 import type { DragPayload, Reminder } from "./types";
 import { UpdateDialog } from "./UpdateDialog";
 import { updateApi } from "./updateApi";
@@ -18,7 +19,6 @@ import "./styles.css";
 const REFRESH_INTERVAL = 15_000;
 const CLOCK_INTERVAL = 1_000;
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1_000;
-const TIMELINE_DURATION_MINUTES = 90;
 
 type PointerDrag = {
   payload: DragPayload;
@@ -36,9 +36,10 @@ type DragPosition = {
   label: string;
 };
 
-function ReminderChip({ reminder, onPointerDrag, onComplete, onDelete }: {
+function ReminderChip({ reminder, onPointerDrag, onEdit, onComplete, onDelete }: {
   reminder: Reminder;
   onPointerDrag: (event: ReactPointerEvent<HTMLElement>, payload: DragPayload, label: string) => void;
+  onEdit: (reminder: Reminder) => void;
   onComplete: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
@@ -52,7 +53,9 @@ function ReminderChip({ reminder, onPointerDrag, onComplete, onDelete }: {
       >
         <GripIcon size={15} />
       </button>
-      <span className="chip-title">{reminder.title}</span>
+      <button className="chip-title" type="button" onClick={() => onEdit(reminder)} aria-label={`Edit ${reminder.title}`}>
+        {reminder.title}
+      </button>
       <button className="chip-action" type="button" onClick={() => onComplete(reminder.id)} aria-label={`Complete ${reminder.title}`}>
         <CheckIcon size={16} />
       </button>
@@ -78,22 +81,28 @@ export default function App() {
   const [manualUpdateStatus, setManualUpdateStatus] = useState<ManualUpdateStatus>("idle");
   const [soundSaving, setSoundSaving] = useState(false);
   const [timelineAdvancing, setTimelineAdvancing] = useState(false);
+  const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const activeDragRef = useRef<PointerDrag | null>(null);
   const dragTargetRef = useRef<number | null>(null);
+  const dragPointerRef = useRef<{ x: number; y: number } | null>(null);
+  const autoScrollFrameRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
   const dismissedUpdateRef = useRef<string | null>(null);
   const updateCheckRef = useRef<Promise<AvailableUpdate | null> | null>(null);
   const previousSlotsRef = useRef<number[]>([]);
+  const previousSlotHeightsRef = useRef(new Map<number, number>());
+
+  const timelineDuration = timelineDurationMinutes(settings.slotInterval);
 
   const pendingTimestamps = useMemo(
     () => reminders.filter((reminder) => !reminder.completed).map((reminder) => reminder.scheduledAt),
     [reminders],
   );
   const slots = useMemo(
-    () => buildTimeSlots(now, settings.slotInterval, TIMELINE_DURATION_MINUTES, pendingTimestamps),
-    [now, pendingTimestamps, settings.slotInterval],
+    () => buildTimeSlots(now, settings.slotInterval, timelineDuration, pendingTimestamps),
+    [now, pendingTimestamps, settings.slotInterval, timelineDuration],
   );
   const remindersByTime = useMemo(() => {
     const map = new Map<number, Reminder[]>();
@@ -143,20 +152,33 @@ export default function App() {
     let animationFrame: number | undefined;
 
     if (previousFirst !== undefined && currentFirst !== undefined && currentFirst > previousFirst) {
-      const removedCount = previous.filter((timestamp) => timestamp < currentFirst).length;
       const timeline = timelineRef.current;
       if (timeline && timeline.scrollTop > 1) {
-        timeline.scrollTop = Math.max(0, timeline.scrollTop - removedCount * 39);
+        const removedHeight = previous
+          .filter((timestamp) => timestamp < currentFirst)
+          .reduce((total, timestamp) => total + (previousSlotHeightsRef.current.get(timestamp) ?? 39), 0);
+        timeline.scrollTop = Math.max(0, timeline.scrollTop - removedHeight);
       } else {
         setTimelineAdvancing(true);
         animationFrame = window.requestAnimationFrame(() => setTimelineAdvancing(false));
       }
+    }
+    const timeline = timelineRef.current;
+    if (timeline) {
+      previousSlotHeightsRef.current = new Map(
+        [...timeline.querySelectorAll<HTMLElement>("[data-slot-time]")]
+          .map((element) => [Number(element.dataset.slotTime), element.offsetHeight]),
+      );
     }
     previousSlotsRef.current = current;
     return () => {
       if (animationFrame !== undefined) window.cancelAnimationFrame(animationFrame);
     };
   }, [slots]);
+
+  useEffect(() => () => {
+    if (autoScrollFrameRef.current !== null) window.cancelAnimationFrame(autoScrollFrameRef.current);
+  }, []);
 
   useEffect(() => {
     if (!message) return;
@@ -264,6 +286,46 @@ export default function App() {
     }
   };
 
+  const beginEditingReminder = (reminder: Reminder) => {
+    setEditingReminder(reminder);
+    setTitle(reminder.title);
+    window.requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    });
+  };
+
+  const cancelEditingReminder = () => {
+    setEditingReminder(null);
+    setTitle("");
+    inputRef.current?.focus();
+  };
+
+  const saveReminderEdit = async () => {
+    if (!editingReminder || saving) return;
+    const updatedTitle = title.trim();
+    if (!updatedTitle) {
+      setMessage("Type something to remember");
+      inputRef.current?.focus();
+      return;
+    }
+    const scheduledAt = reminders.find((item) => item.id === editingReminder.id)?.scheduledAt
+      ?? editingReminder.scheduledAt;
+    setSaving(true);
+    try {
+      const updated = await reminderApi.update(editingReminder.id, updatedTitle, scheduledAt);
+      setReminders((current) => current.map((item) => item.id === editingReminder.id ? updated : item));
+      setEditingReminder(null);
+      setTitle("");
+      setMessage("Reminder updated");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update reminder");
+      inputRef.current?.focus();
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const complete = async (id: string) => {
     const before = reminders;
     setReminders((current) => current.filter((item) => item.id !== id));
@@ -324,23 +386,53 @@ export default function App() {
       startY: event.clientY,
       moved: false,
     };
+    dragPointerRef.current = { x: event.clientX, y: event.clientY };
     dragTargetRef.current = null;
     setDragPosition({ x: event.clientX, y: event.clientY, label });
+    if (autoScrollFrameRef.current === null) {
+      autoScrollFrameRef.current = window.requestAnimationFrame(runDragAutoScroll);
+    }
   };
+
+  const updateDragTarget = (clientX: number, clientY: number) => {
+    const timeline = timelineRef.current;
+    let sampleY = clientY;
+    if (timeline) {
+      const bounds = timeline.getBoundingClientRect();
+      if (clientX >= bounds.left && clientX <= bounds.right && clientY >= bounds.top - 24 && clientY <= bounds.bottom + 24) {
+        sampleY = Math.min(bounds.bottom - 2, Math.max(bounds.top + 2, clientY));
+      }
+    }
+    const hovered = document.elementFromPoint(clientX, sampleY)?.closest<HTMLElement>("[data-slot-time]");
+    const timestamp = hovered ? Number(hovered.dataset.slotTime) : null;
+    const target = timestamp !== null && Number.isFinite(timestamp) ? timestamp : null;
+    dragTargetRef.current = target;
+    setDragOver(target);
+  };
+
+  function runDragAutoScroll() {
+    autoScrollFrameRef.current = null;
+    const timeline = timelineRef.current;
+    const pointer = dragPointerRef.current;
+    if (!activeDragRef.current || !timeline || !pointer) return;
+    const bounds = timeline.getBoundingClientRect();
+    const velocity = dragAutoScrollVelocity(pointer.y, bounds.top, bounds.bottom);
+    if (velocity !== 0) {
+      const previousScrollTop = timeline.scrollTop;
+      timeline.scrollTop += velocity;
+      if (timeline.scrollTop !== previousScrollTop) updateDragTarget(pointer.x, pointer.y);
+    }
+    autoScrollFrameRef.current = window.requestAnimationFrame(runDragAutoScroll);
+  }
 
   const updatePointerDrag = (event: ReactPointerEvent<HTMLElement>) => {
     const drag = activeDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const distance = Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY);
     if (distance > 5) drag.moved = true;
-
-    const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-slot-time]");
-    const timestamp = hovered ? Number(hovered.dataset.slotTime) : null;
-    const target = timestamp !== null && Number.isFinite(timestamp) ? timestamp : null;
-    dragTargetRef.current = target;
-    setDragOver(target);
+    dragPointerRef.current = { x: event.clientX, y: event.clientY };
+    updateDragTarget(event.clientX, event.clientY);
     setDragPosition({ x: event.clientX, y: event.clientY, label: drag.label });
-
   };
 
   const finishPointerDrag = (event: ReactPointerEvent<HTMLElement>, cancelled = false) => {
@@ -350,7 +442,12 @@ export default function App() {
     suppressClickRef.current = drag.moved;
     if (drag.source.hasPointerCapture(drag.pointerId)) drag.source.releasePointerCapture(drag.pointerId);
     activeDragRef.current = null;
+    dragPointerRef.current = null;
     dragTargetRef.current = null;
+    if (autoScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(autoScrollFrameRef.current);
+      autoScrollFrameRef.current = null;
+    }
     setDragPosition(null);
     setDragOver(null);
     if (cancelled || target === null || saving) return;
@@ -377,24 +474,46 @@ export default function App() {
         </div>
       </header>
 
-      <section className="composer" aria-label="New reminder">
+      <section className={`composer${editingReminder ? " is-editing" : ""}`} aria-label={editingReminder ? "Edit reminder" : "New reminder"}>
         <input
           ref={inputRef}
           id="reminder-title"
           value={title}
           onChange={(event) => setTitle(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !saving) scheduleNext();
+            if (event.key === "Escape" && editingReminder) cancelEditingReminder();
+            else if (event.key === "Enter" && !saving) {
+              if (editingReminder) void saveReminderEdit();
+              else scheduleNext();
+            }
           }}
-          placeholder="What needs remembering?"
+          placeholder={editingReminder ? "Edit reminder" : "What needs remembering?"}
           maxLength={160}
           autoFocus
         />
+        {editingReminder && (
+          <button
+            className="composer-cancel"
+            type="button"
+            onClick={cancelEditingReminder}
+            disabled={saving}
+            aria-label="Cancel editing"
+            title="Cancel editing (Esc)"
+          >
+            <CloseIcon size={15} />
+          </button>
+        )}
         <button
-          className="composer-grip"
+          className={`composer-grip${editingReminder ? " is-save" : ""}`}
           type="button"
-          onPointerDown={(event) => beginPointerDrag(event, { type: "create" }, title.trim() || "Reminder")}
+          onPointerDown={(event) => {
+            if (!editingReminder) beginPointerDrag(event, { type: "create" }, title.trim() || "Reminder");
+          }}
           onClick={() => {
+            if (editingReminder) {
+              void saveReminderEdit();
+              return;
+            }
             if (suppressClickRef.current) {
               suppressClickRef.current = false;
               return;
@@ -402,14 +521,16 @@ export default function App() {
             if (!saving) scheduleNext();
           }}
           disabled={saving}
-          aria-label={`Drag to a time, or click to schedule at the next ${settings.slotInterval}-minute slot`}
+          aria-label={editingReminder
+            ? `Save changes to ${editingReminder.title}`
+            : `Drag to a time, or click to schedule at the next ${settings.slotInterval}-minute slot`}
         >
-          <GripIcon size={18} />
+          {editingReminder ? <CheckIcon size={17} /> : <GripIcon size={18} />}
         </button>
       </section>
 
       <section className="timeline-section" aria-labelledby="timeline-title">
-        <h2 id="timeline-title">Next 90 min</h2>
+        <h2 id="timeline-title">Next {formatTimelineDuration(timelineDuration)}</h2>
         <div ref={timelineRef} className="timeline" role="list" aria-label={`${settings.slotInterval}-minute reminder slots`}>
           <div className={`timeline-track${timelineAdvancing ? " is-advancing" : ""}`}>
           {slots.map((slot) => {
@@ -425,15 +546,18 @@ export default function App() {
                 <time dateTime={new Date(slot.timestamp).toISOString()}>{slot.label}</time>
                 <span className="rail-dot" aria-hidden="true" />
                 <div className="slot-content">
-                  {slotReminders.map((reminder) => (
-                    <ReminderChip
-                      key={reminder.id}
-                      reminder={reminder}
-                      onPointerDrag={beginPointerDrag}
-                      onComplete={complete}
-                      onDelete={remove}
-                    />
-                  ))}
+                  {slotReminders.length > 0 && <div className="slot-reminders" aria-label={`${slotReminders.length} ${slotReminders.length === 1 ? "reminder" : "reminders"} at ${slot.label}`}>
+                    {slotReminders.map((reminder) => (
+                      <ReminderChip
+                        key={reminder.id}
+                        reminder={reminder}
+                        onPointerDrag={beginPointerDrag}
+                        onEdit={beginEditingReminder}
+                        onComplete={complete}
+                        onDelete={remove}
+                      />
+                    ))}
+                  </div>}
                   {highlighted && slotReminders.length === 0 && <span className="drop-hint">Drop here</span>}
                   {slotReminders.length === 0 && !highlighted && (
                     <button

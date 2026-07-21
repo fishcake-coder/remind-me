@@ -2,6 +2,18 @@ import type { TimeSlot } from "./types";
 
 export const ONE_MINUTE = 60 * 1000;
 export const FIVE_MINUTES = 5 * 60 * 1000;
+export const TIMELINE_SLOT_COUNT = 90;
+
+export function timelineDurationMinutes(intervalMinutes: number): number {
+  return intervalMinutes * TIMELINE_SLOT_COUNT;
+}
+
+export function formatTimelineDuration(durationMinutes: number): string {
+  if (durationMinutes < 120) return `${durationMinutes} min`;
+  const hours = Math.floor(durationMinutes / 60);
+  const minutes = durationMinutes % 60;
+  return minutes ? `${hours} hr ${minutes} min` : `${hours} hr`;
+}
 
 export function floorToInterval(timestamp: number, intervalMinutes: number): number {
   const interval = intervalMinutes * ONE_MINUTE;
