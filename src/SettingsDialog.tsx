@@ -3,8 +3,13 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import thirdPartyLicenses from "./generated/thirdPartyLicenses.json";
 import { CloseIcon } from "./icons";
-import { NOTIFICATION_SOUNDS, SLOT_INTERVALS } from "./settings";
-import type { AppSettings, NotificationSound, SlotInterval, Theme } from "./settings";
+import {
+  MAX_SNOOZE_MINUTES,
+  MIN_SNOOZE_MINUTES,
+  NOTIFICATION_SOUNDS,
+  SLOT_INTERVALS,
+} from "./settings";
+import type { AppSettings, NotificationSound, SlotInterval, SnoozeDurations, Theme } from "./settings";
 
 const REPOSITORY_URL = "https://github.com/fishcake-coder/remind-me";
 
@@ -58,6 +63,7 @@ export function SettingsDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [version, setVersion] = useState("Loading…");
   const [showLicenses, setShowLicenses] = useState(false);
+  const [snoozeDrafts, setSnoozeDrafts] = useState(() => settings.snoozeDurations.map(String));
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -84,8 +90,32 @@ export function SettingsDialog({
     };
   }, []);
 
+  useEffect(() => {
+    setSnoozeDrafts(settings.snoozeDurations.map(String));
+  }, [settings.snoozeDurations]);
+
   const setTheme = (theme: Theme) => onChange({ ...settings, theme });
   const setSlotInterval = (slotInterval: SlotInterval) => onChange({ ...settings, slotInterval });
+  const updateSnoozeDraft = (index: number, value: string) => {
+    setSnoozeDrafts((current) => current.map((draft, draftIndex) => draftIndex === index ? value : draft));
+    const parsedValue = Number(value);
+    if (!Number.isInteger(parsedValue) || parsedValue < MIN_SNOOZE_MINUTES || parsedValue > MAX_SNOOZE_MINUTES) return;
+    if (parsedValue === settings.snoozeDurations[index]) return;
+    const snoozeDurations = [...settings.snoozeDurations] as SnoozeDurations;
+    snoozeDurations[index] = parsedValue;
+    onChange({ ...settings, snoozeDurations });
+  };
+  const commitSnoozeDraft = (index: number) => {
+    const value = Number(snoozeDrafts[index]);
+    if (!Number.isInteger(value) || value < MIN_SNOOZE_MINUTES || value > MAX_SNOOZE_MINUTES) {
+      setSnoozeDrafts(settings.snoozeDurations.map(String));
+      return;
+    }
+    if (value === settings.snoozeDurations[index]) return;
+    const snoozeDurations = [...settings.snoozeDurations] as SnoozeDurations;
+    snoozeDurations[index] = value;
+    onChange({ ...settings, snoozeDurations });
+  };
 
   const openRepository = async () => {
     if ("__TAURI_INTERNALS__" in window) await openUrl(REPOSITORY_URL);
@@ -161,6 +191,35 @@ export function SettingsDialog({
                 >
                   {minutes} min
                 </button>
+              ))}
+            </div>
+          </fieldset>
+
+          <fieldset className="settings-group">
+            <legend>Snooze options</legend>
+            <p>Set the three notification buttons. The first option is the default.</p>
+            <div className="snooze-options">
+              {snoozeDrafts.map((draft, index) => (
+                <label className="snooze-option" key={index}>
+                  <span>{index === 0 ? "Default" : `Option ${index + 1}`}</span>
+                  <span className="snooze-input">
+                    <input
+                      type="number"
+                      min={MIN_SNOOZE_MINUTES}
+                      max={MAX_SNOOZE_MINUTES}
+                      step="1"
+                      inputMode="numeric"
+                      value={draft}
+                      onChange={(event) => updateSnoozeDraft(index, event.target.value)}
+                      onBlur={() => commitSnoozeDraft(index)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") event.currentTarget.blur();
+                      }}
+                      aria-label={`${index === 0 ? "Default" : `Option ${index + 1}`} snooze duration in minutes`}
+                    />
+                    <small>min</small>
+                  </span>
+                </label>
               ))}
             </div>
           </fieldset>

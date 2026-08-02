@@ -1,6 +1,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     fs,
     io::Write,
     path::{Path, PathBuf},
@@ -14,7 +15,10 @@ use tauri::{
     AppHandle, Emitter, Manager, State, WindowEvent,
 };
 use tauri_plugin_global_shortcut::ShortcutState;
+#[cfg(not(windows))]
 use tauri_plugin_notification::NotificationExt;
+#[cfg(windows)]
+use tauri_winrt_notification::{Duration as ToastDuration, Sound as ToastSound, Toast};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +53,10 @@ impl NotificationSound {
     }
 }
 
+const DEFAULT_SNOOZE_DURATIONS: [i64; 3] = [5, 15, 30];
+const MIN_SNOOZE_MINUTES: i64 = 1;
+const MAX_SNOOZE_MINUTES: i64 = 7 * 24 * 60;
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SettingsFile {
@@ -59,6 +67,7 @@ struct SettingsFile {
 struct ReminderState {
     reminders: Arc<Mutex<Vec<Reminder>>>,
     data_file: PathBuf,
+    pending_notifications: Arc<Mutex<HashSet<Uuid>>>,
 }
 
 impl ReminderState {
@@ -67,6 +76,7 @@ impl ReminderState {
         let state = Self {
             reminders: Arc::new(Mutex::new(reminders)),
             data_file,
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
         let _ = prune_delivered(&state);
         state
@@ -74,6 +84,25 @@ impl ReminderState {
 
     fn persist(&self, reminders: &[Reminder]) -> Result<(), String> {
         write_json_atomically(&self.data_file, reminders)
+    }
+
+    fn mark_notifications_pending(&self, reminders: &[Reminder]) {
+        if let Ok(mut pending) = self.pending_notifications.lock() {
+            pending.extend(reminders.iter().map(|reminder| reminder.id));
+        }
+    }
+
+    fn clear_pending_notification(&self, id: Uuid) {
+        if let Ok(mut pending) = self.pending_notifications.lock() {
+            pending.remove(&id);
+        }
+    }
+
+    fn pending_notification_ids(&self) -> HashSet<Uuid> {
+        self.pending_notifications
+            .lock()
+            .map(|pending| pending.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -115,6 +144,66 @@ impl SoundState {
             .lock()
             .map_err(|_| "Notification sound is unavailable".to_string())? = sound;
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct SnoozeState {
+    selected: Arc<Mutex<[i64; 3]>>,
+    data_file: PathBuf,
+}
+
+impl SnoozeState {
+    fn load(data_file: PathBuf) -> Self {
+        let selected = fs::read(&data_file)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<[i64; 3]>(&bytes).ok())
+            .map(normalize_snooze_durations)
+            .unwrap_or(DEFAULT_SNOOZE_DURATIONS);
+        Self {
+            selected: Arc::new(Mutex::new(selected)),
+            data_file,
+        }
+    }
+
+    fn current(&self) -> Result<[i64; 3], String> {
+        self.selected
+            .lock()
+            .map(|durations| *durations)
+            .map_err(|_| "Snooze settings are unavailable".into())
+    }
+
+    fn set(&self, durations: [i64; 3]) -> Result<(), String> {
+        let durations = validate_snooze_durations(durations)?;
+        write_json_atomically(&self.data_file, &durations)?;
+        *self
+            .selected
+            .lock()
+            .map_err(|_| "Snooze settings are unavailable".to_string())? = durations;
+        Ok(())
+    }
+}
+
+fn normalize_snooze_durations(durations: [i64; 3]) -> [i64; 3] {
+    let mut normalized = DEFAULT_SNOOZE_DURATIONS;
+    for (index, duration) in durations.into_iter().enumerate() {
+        if (MIN_SNOOZE_MINUTES..=MAX_SNOOZE_MINUTES).contains(&duration) {
+            normalized[index] = duration;
+        }
+    }
+    normalized
+}
+
+fn validate_snooze_durations(durations: [i64; 3]) -> Result<[i64; 3], String> {
+    if durations
+        .iter()
+        .all(|duration| (MIN_SNOOZE_MINUTES..=MAX_SNOOZE_MINUTES).contains(duration))
+    {
+        Ok(durations)
+    } else {
+        Err(format!(
+            "Snooze durations must be whole minutes between {MIN_SNOOZE_MINUTES} and {MAX_SNOOZE_MINUTES}"
+        ))
     }
 }
 
@@ -289,6 +378,16 @@ fn preview_notification_sound(
     play_notification_sound(sound, &state.resource_dir)
 }
 
+#[tauri::command]
+fn get_snooze_durations(state: State<'_, SnoozeState>) -> Result<[i64; 3], String> {
+    state.current()
+}
+
+#[tauri::command]
+fn set_snooze_durations(durations: [i64; 3], state: State<'_, SnoozeState>) -> Result<(), String> {
+    state.set(durations)
+}
+
 fn persist_due_tombstones(state: &ReminderState, now: i64) -> Result<Vec<Reminder>, String> {
     let mut reminders = state
         .reminders
@@ -317,24 +416,185 @@ fn persist_due_tombstones(state: &ReminderState, now: i64) -> Result<Vec<Reminde
 }
 
 fn prune_delivered(state: &ReminderState) -> Result<bool, String> {
+    let pending_ids = state.pending_notification_ids();
     let mut reminders = state
         .reminders
         .lock()
         .map_err(|_| "Reminder storage is unavailable".to_string())?;
-    let pending: Vec<Reminder> = reminders
+    let retained: Vec<Reminder> = reminders
         .iter()
-        .filter(|item| !item.completed)
+        .filter(|item| !item.completed || pending_ids.contains(&item.id))
         .cloned()
         .collect();
-    if pending.len() == reminders.len() {
+    if retained.len() == reminders.len() {
         return Ok(false);
     }
-    state.persist(&pending)?;
-    *reminders = pending;
+    state.persist(&retained)?;
+    *reminders = retained;
     Ok(true)
 }
 
-fn start_scheduler(app: AppHandle, reminder_state: ReminderState, sound_state: SoundState) {
+fn snooze_reminder(
+    id: Uuid,
+    option_index: usize,
+    reminder_state: &ReminderState,
+    snooze_state: &SnoozeState,
+) -> Result<Reminder, String> {
+    let durations = snooze_state.current()?;
+    let minutes = *durations
+        .get(option_index)
+        .ok_or_else(|| "Snooze option is unavailable".to_string())?;
+    let delay = minutes
+        .checked_mul(60_000)
+        .ok_or_else(|| "Snooze duration is too long".to_string())?;
+    let scheduled_at = Utc::now()
+        .timestamp_millis()
+        .checked_add(delay)
+        .ok_or_else(|| "Snooze time is too far in the future".to_string())?;
+
+    let mut reminders = reminder_state
+        .reminders
+        .lock()
+        .map_err(|_| "Reminder storage is unavailable".to_string())?;
+    let mut updated = reminders.clone();
+    let reminder = updated
+        .iter_mut()
+        .find(|item| item.id == id && item.completed && item.notified_at.is_some())
+        .ok_or_else(|| "Reminder is no longer available to snooze".to_string())?;
+    reminder.scheduled_at = scheduled_at;
+    reminder.completed = false;
+    reminder.notified_at = None;
+    let snoozed = reminder.clone();
+    updated.sort_by_key(|item| item.scheduled_at);
+    reminder_state.persist(&updated)?;
+    *reminders = updated;
+    drop(reminders);
+    reminder_state.clear_pending_notification(id);
+    Ok(snoozed)
+}
+
+#[cfg(windows)]
+fn parse_snooze_action(action: &str) -> Option<(Uuid, usize)> {
+    let mut parts = action.split('|');
+    if parts.next()? != "snooze" {
+        return None;
+    }
+    let id = Uuid::parse_str(parts.next()?).ok()?;
+    let option_index = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((id, option_index))
+}
+
+#[cfg(windows)]
+fn show_reminder_notification(
+    app: &AppHandle,
+    reminder_state: ReminderState,
+    sound_state: SoundState,
+    snooze_state: SnoozeState,
+    reminder: &Reminder,
+    sound: NotificationSound,
+) -> Result<(), String> {
+    let durations = snooze_state.current()?;
+    let mut toast = Toast::new(&app.config().identifier)
+        .title("Remind Me")
+        .text1(&reminder.title)
+        .duration(ToastDuration::Long);
+    for (index, minutes) in durations.into_iter().enumerate() {
+        let label = if minutes == 1 {
+            format!("Snooze {minutes} minute")
+        } else {
+            format!("Snooze {minutes} minutes")
+        };
+        toast = toast.add_button(&label, &format!("snooze|{}|{index}", reminder.id));
+    }
+    toast = if sound == NotificationSound::Default {
+        toast.sound(Some(ToastSound::Default))
+    } else {
+        toast.sound(None)
+    };
+
+    let reminder_id = reminder.id;
+    let activation_app = app.clone();
+    let activation_state = reminder_state.clone();
+    let activation_snooze_state = snooze_state.clone();
+    toast = toast.on_activated(move |action| {
+        if let Some((action_id, option_index)) = action.as_deref().and_then(parse_snooze_action) {
+            if action_id == reminder_id {
+                match snooze_reminder(
+                    action_id,
+                    option_index,
+                    &activation_state,
+                    &activation_snooze_state,
+                ) {
+                    Ok(_) => {
+                        let _ = activation_app.emit("reminders-changed", ());
+                    }
+                    Err(error) => eprintln!("Could not snooze reminder: {error}"),
+                }
+            }
+        } else {
+            activation_state.clear_pending_notification(reminder_id);
+            if prune_delivered(&activation_state).unwrap_or(false) {
+                let _ = activation_app.emit("reminders-changed", ());
+            }
+            show_main_window(&activation_app);
+        }
+        Ok(())
+    });
+
+    let dismissal_app = app.clone();
+    let dismissal_state = reminder_state.clone();
+    toast = toast.on_dismissed(move |_| {
+        dismissal_state.clear_pending_notification(reminder_id);
+        if prune_delivered(&dismissal_state).unwrap_or(false) {
+            let _ = dismissal_app.emit("reminders-changed", ());
+        }
+        Ok(())
+    });
+
+    toast.show().map_err(|error| error.to_string())?;
+    if sound != NotificationSound::Default && sound != NotificationSound::None {
+        let _ = play_notification_sound(sound, &sound_state.resource_dir);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn show_reminder_notification(
+    app: &AppHandle,
+    _reminder_state: ReminderState,
+    sound_state: SoundState,
+    _snooze_state: SnoozeState,
+    reminder: &Reminder,
+    sound: NotificationSound,
+) -> Result<(), String> {
+    let builder = app
+        .notification()
+        .builder()
+        .title("Remind Me")
+        .body(&reminder.title);
+    if sound == NotificationSound::Default {
+        builder
+            .sound("Default")
+            .show()
+            .map_err(|error| error.to_string())?;
+    } else {
+        builder.show().map_err(|error| error.to_string())?;
+        if sound != NotificationSound::None {
+            let _ = play_notification_sound(sound, &sound_state.resource_dir);
+        }
+    }
+    Ok(())
+}
+
+fn start_scheduler(
+    app: AppHandle,
+    reminder_state: ReminderState,
+    sound_state: SoundState,
+    snooze_state: SnoozeState,
+) {
     thread::spawn(move || loop {
         thread::sleep(Duration::from_secs(3));
         if prune_delivered(&reminder_state).unwrap_or(false) {
@@ -350,22 +610,28 @@ fn start_scheduler(app: AppHandle, reminder_state: ReminderState, sound_state: S
             continue;
         }
 
+        #[cfg(windows)]
+        reminder_state.mark_notifications_pending(&due);
         let _ = app.emit("reminders-changed", ());
         let sound = sound_state.current().unwrap_or_default();
         for reminder in &due {
-            let builder = app
-                .notification()
-                .builder()
-                .title("Remind Me")
-                .body(&reminder.title);
-            if sound == NotificationSound::Default {
-                let _ = builder.sound("Default").show();
-            } else {
-                let _ = builder.show();
-                let _ = play_notification_sound(sound, &sound_state.resource_dir);
+            if let Err(error) = show_reminder_notification(
+                &app,
+                reminder_state.clone(),
+                sound_state.clone(),
+                snooze_state.clone(),
+                reminder,
+                sound,
+            ) {
+                eprintln!("Could not show reminder notification: {error}");
+                reminder_state.clear_pending_notification(reminder.id);
+                if prune_delivered(&reminder_state).unwrap_or(false) {
+                    let _ = app.emit("reminders-changed", ());
+                }
             }
         }
 
+        #[cfg(not(windows))]
         if prune_delivered(&reminder_state).unwrap_or(false) {
             let _ = app.emit("reminders-changed", ());
         }
@@ -458,9 +724,16 @@ pub fn run() {
                 app_data_dir.join("settings.json"),
                 app.path().resource_dir()?,
             );
+            let snooze_state = SnoozeState::load(app_data_dir.join("snooze.json"));
             app.manage(reminder_state.clone());
             app.manage(sound_state.clone());
-            start_scheduler(app.handle().clone(), reminder_state, sound_state);
+            app.manage(snooze_state.clone());
+            start_scheduler(
+                app.handle().clone(),
+                reminder_state,
+                sound_state,
+                snooze_state,
+            );
 
             let open = MenuItem::with_id(
                 app,
@@ -511,7 +784,9 @@ pub fn run() {
             delete_reminder,
             get_notification_sound,
             set_notification_sound,
-            preview_notification_sound
+            preview_notification_sound,
+            get_snooze_durations,
+            set_snooze_durations
         ])
         .run(tauri::generate_context!())
         .expect("error while running Remind Me");
@@ -565,6 +840,7 @@ mod tests {
         let state = ReminderState {
             reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
             data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
 
         let due = persist_due_tombstones(&state, 200).unwrap();
@@ -587,6 +863,7 @@ mod tests {
         let state = ReminderState {
             reminders: Arc::new(Mutex::new(vec![test_reminder(100)])),
             data_file: blocked_parent.join("reminders.json"),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
 
         assert!(persist_due_tombstones(&state, 200).is_err());
@@ -619,6 +896,7 @@ mod tests {
         let state = ReminderState {
             reminders: Arc::new(Mutex::new(vec![test_reminder(100)])),
             data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
         assert_eq!(persist_due_tombstones(&state, 200).unwrap().len(), 1);
 
@@ -627,6 +905,7 @@ mod tests {
         let blocked_state = ReminderState {
             reminders: state.reminders.clone(),
             data_file: blocked_parent.join("reminders.json"),
+            pending_notifications: state.pending_notifications.clone(),
         };
         assert!(prune_delivered(&blocked_state).is_err());
         assert!(persist_due_tombstones(&blocked_state, 300)
@@ -649,6 +928,7 @@ mod tests {
         let state = ReminderState {
             reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
             data_file: blocked_parent.join("reminders.json"),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
 
         assert!(remove_reminder(reminder.id, &state).is_err());
@@ -664,6 +944,7 @@ mod tests {
         let state = ReminderState {
             reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
             data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
         let new_time = Utc::now().timestamp_millis() + 120_000;
 
@@ -680,6 +961,39 @@ mod tests {
         let saved = read_reminders(&data_file).unwrap();
         assert_eq!(saved[0].title, "Updated title");
         assert_eq!(saved[0].scheduled_at, new_time);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn snoozing_a_delivered_reminder_restores_it_with_the_selected_duration() {
+        let directory = std::env::temp_dir().join(format!("remind-me-test-{}", Uuid::new_v4()));
+        let data_file = directory.join("reminders.json");
+        let mut reminder = test_reminder(Utc::now().timestamp_millis());
+        reminder.completed = true;
+        reminder.notified_at = Some(Utc::now().timestamp_millis());
+        let reminder_id = reminder.id;
+        let state = ReminderState {
+            reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
+            data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
+        };
+        state.persist(std::slice::from_ref(&reminder)).unwrap();
+        state.mark_notifications_pending(std::slice::from_ref(&reminder));
+        let snooze_state = SnoozeState {
+            selected: Arc::new(Mutex::new([5, 15, 30])),
+            data_file: directory.join("snooze.json"),
+        };
+        let before = Utc::now().timestamp_millis();
+
+        let snoozed = snooze_reminder(reminder_id, 1, &state, &snooze_state).unwrap();
+
+        assert!(!snoozed.completed);
+        assert_eq!(snoozed.notified_at, None);
+        assert!(snoozed.scheduled_at >= before + 15 * 60_000);
+        assert!(state.pending_notification_ids().is_empty());
+        let saved = read_reminders(&data_file).unwrap();
+        assert_eq!(saved[0].id, reminder_id);
+        assert!(!saved[0].completed);
         fs::remove_dir_all(directory).unwrap();
     }
 

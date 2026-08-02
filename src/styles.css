@@ -555,6 +555,37 @@ button { -webkit-tap-highlight-color: transparent; }
 .segmented-control button.is-selected { color: var(--ink); background: var(--surface-raised); box-shadow: 0 1px 3px var(--shadow); }
 .segmented-control button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
+.snooze-options { display: grid; gap: 6px; }
+
+.snooze-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 34px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  font-size: 12px;
+}
+
+.snooze-input { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); }
+.snooze-input input {
+  width: 62px;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--input-border);
+  border-radius: 5px;
+  color: var(--ink);
+  background: var(--surface-raised);
+  font: inherit;
+  text-align: right;
+}
+
+.snooze-input input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.snooze-input small { font-size: 10.5px; }
+
 .sound-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

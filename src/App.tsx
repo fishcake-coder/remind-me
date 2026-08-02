@@ -7,7 +7,8 @@ import { reminderApi } from "./reminderApi";
 import { SettingsDialog } from "./SettingsDialog";
 import type { ManualUpdateStatus } from "./SettingsDialog";
 import { loadSettings, saveSettings } from "./settings";
-import type { NotificationSound } from "./settings";
+import type { AppSettings, NotificationSound } from "./settings";
+import { snoozeApi } from "./snoozeApi";
 import { soundApi } from "./soundApi";
 import { buildTimeSlots, formatTime, formatTimelineDuration, nextIntervalSlot, timelineDurationMinutes } from "./time";
 import type { DragPayload, Reminder } from "./types";
@@ -204,6 +205,32 @@ export default function App() {
       disposed = true;
     };
   }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    void snoozeApi.get()
+      .then((snoozeDurations) => {
+        if (!disposed) setSettings((current) => ({ ...current, snoozeDurations }));
+      })
+      .catch(() => {
+        if (!disposed) setMessage("Could not load snooze options");
+      });
+    return () => {
+      disposed = true;
+    };
+  }, []);
+
+  const changeSettings = (nextSettings: AppSettings) => {
+    const snoozeChanged = nextSettings.snoozeDurations.some(
+      (minutes, index) => minutes !== settings.snoozeDurations[index],
+    );
+    setSettings(nextSettings);
+    if (snoozeChanged) {
+      void snoozeApi.set(nextSettings.snoozeDurations).catch(() => {
+        setMessage("Could not save snooze options");
+      });
+    }
+  };
 
   const checkForUpdates = useCallback(async (manual: boolean) => {
     if (manual) setManualUpdateStatus("checking");
@@ -598,7 +625,7 @@ export default function App() {
           settings={settings}
           manualUpdateStatus={manualUpdateStatus}
           soundSaving={soundSaving}
-          onChange={setSettings}
+          onChange={changeSettings}
           onSoundChange={(sound) => void changeNotificationSound(sound)}
           onPreviewSound={(sound) => void previewNotificationSound(sound)}
           onCheckForUpdates={() => void checkForUpdates(true)}
