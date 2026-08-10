@@ -1,9 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DEFAULT_SNOOZE_DURATIONS, normalizeSnoozeDurations } from "../src/settings.ts";
+import { DEFAULT_SETTINGS, DEFAULT_SNOOZE_DURATIONS, normalizeSnoozeDurations } from "../src/settings.ts";
 
 test("snooze settings default to five, fifteen, and thirty minutes", () => {
   assert.deepEqual(DEFAULT_SNOOZE_DURATIONS, [5, 15, 30]);
+});
+
+test("start on login is enabled by default", () => {
+  assert.equal(DEFAULT_SETTINGS.startOnLogin, true);
 });
 
 test("invalid snooze settings fall back per option", () => {

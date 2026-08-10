@@ -1,6 +1,7 @@
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
+import { autostartApi } from "./autostartApi";
 import { dragAutoScrollVelocity } from "./drag";
 import { CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
 import { reminderApi } from "./reminderApi";
@@ -10,7 +11,7 @@ import { loadSettings, saveSettings } from "./settings";
 import type { AppSettings, NotificationSound } from "./settings";
 import { snoozeApi } from "./snoozeApi";
 import { soundApi } from "./soundApi";
-import { buildTimeSlots, formatTime, formatTimelineDuration, nextIntervalSlot, timelineDurationMinutes } from "./time";
+import { buildTimeSlots, formatTime, formatTimeAgo, formatTimelineDuration, nextIntervalSlot, timelineDurationMinutes } from "./time";
 import type { DragPayload, Reminder } from "./types";
 import { UpdateDialog } from "./UpdateDialog";
 import { updateApi } from "./updateApi";
@@ -37,8 +38,9 @@ type DragPosition = {
   label: string;
 };
 
-function ReminderChip({ reminder, onPointerDrag, onEdit, onComplete, onDelete }: {
+function ReminderChip({ reminder, overdueLabel, onPointerDrag, onEdit, onComplete, onDelete }: {
   reminder: Reminder;
+  overdueLabel?: string;
   onPointerDrag: (event: ReactPointerEvent<HTMLElement>, payload: DragPayload, label: string) => void;
   onEdit: (reminder: Reminder) => void;
   onComplete: (id: string) => void;
@@ -55,7 +57,8 @@ function ReminderChip({ reminder, onPointerDrag, onEdit, onComplete, onDelete }:
         <GripIcon size={15} />
       </button>
       <button className="chip-title" type="button" onClick={() => onEdit(reminder)} aria-label={`Edit ${reminder.title}`}>
-        {reminder.title}
+        <span>{reminder.title}</span>
+        {overdueLabel && <small>{overdueLabel}</small>}
       </button>
       <button className="chip-action" type="button" onClick={() => onComplete(reminder.id)} aria-label={`Complete ${reminder.title}`}>
         <CheckIcon size={16} />
@@ -81,6 +84,7 @@ export default function App() {
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const [manualUpdateStatus, setManualUpdateStatus] = useState<ManualUpdateStatus>("idle");
   const [soundSaving, setSoundSaving] = useState(false);
+  const [autostartSaving, setAutostartSaving] = useState(false);
   const [timelineAdvancing, setTimelineAdvancing] = useState(false);
   const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -97,8 +101,17 @@ export default function App() {
 
   const timelineDuration = timelineDurationMinutes(settings.slotInterval);
 
+  const missedReminders = useMemo(
+    () => reminders
+      .filter((reminder) => !reminder.completed && reminder.missedAt != null)
+      .sort((left, right) => left.scheduledAt - right.scheduledAt),
+    [reminders],
+  );
+
   const pendingTimestamps = useMemo(
-    () => reminders.filter((reminder) => !reminder.completed).map((reminder) => reminder.scheduledAt),
+    () => reminders
+      .filter((reminder) => !reminder.completed && reminder.missedAt == null)
+      .map((reminder) => reminder.scheduledAt),
     [reminders],
   );
   const slots = useMemo(
@@ -108,7 +121,7 @@ export default function App() {
   const remindersByTime = useMemo(() => {
     const map = new Map<number, Reminder[]>();
     for (const reminder of reminders) {
-      if (reminder.completed) continue;
+      if (reminder.completed || reminder.missedAt != null) continue;
       const group = map.get(reminder.scheduledAt);
       if (group) group.push(reminder);
       else map.set(reminder.scheduledAt, [reminder]);
@@ -180,6 +193,27 @@ export default function App() {
   useEffect(() => () => {
     if (autoScrollFrameRef.current !== null) window.cancelAnimationFrame(autoScrollFrameRef.current);
   }, []);
+
+  useEffect(() => {
+    if (!autostartApi.isNative) return;
+    let disposed = false;
+    setAutostartSaving(true);
+    void autostartApi.isEnabled()
+      .then(async (enabled) => {
+        if (!disposed && enabled !== settings.startOnLogin) {
+          await autostartApi.set(settings.startOnLogin);
+        }
+      })
+      .catch(() => {
+        if (!disposed) setMessage("Could not update start-on-login setting");
+      })
+      .finally(() => {
+        if (!disposed) setAutostartSaving(false);
+      });
+    return () => {
+      disposed = true;
+    };
+  }, [settings.startOnLogin]);
 
   useEffect(() => {
     if (!message) return;
@@ -336,15 +370,18 @@ export default function App() {
       inputRef.current?.focus();
       return;
     }
-    const scheduledAt = reminders.find((item) => item.id === editingReminder.id)?.scheduledAt
-      ?? editingReminder.scheduledAt;
+    const wasMissed = editingReminder.missedAt != null;
+    const scheduledAt = wasMissed
+      ? nextIntervalSlot(Date.now(), settings.slotInterval)
+      : reminders.find((item) => item.id === editingReminder.id)?.scheduledAt
+        ?? editingReminder.scheduledAt;
     setSaving(true);
     try {
       const updated = await reminderApi.update(editingReminder.id, updatedTitle, scheduledAt);
       setReminders((current) => current.map((item) => item.id === editingReminder.id ? updated : item));
       setEditingReminder(null);
       setTitle("");
-      setMessage("Reminder updated");
+      setMessage(wasMissed ? `Rescheduled for ${formatTime(scheduledAt)}` : "Reminder updated");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not update reminder");
       inputRef.current?.focus();
@@ -486,7 +523,7 @@ export default function App() {
 
   return (
     <main
-      className={`app-shell${dragPosition ? " is-dragging" : ""}`}
+      className={`app-shell${missedReminders.length ? " has-missed" : ""}${dragPosition ? " is-dragging" : ""}`}
       onPointerMove={updatePointerDrag}
       onPointerUp={(event) => finishPointerDrag(event)}
       onPointerCancel={(event) => finishPointerDrag(event, true)}
@@ -555,6 +592,29 @@ export default function App() {
           {editingReminder ? <CheckIcon size={17} /> : <GripIcon size={18} />}
         </button>
       </section>
+
+      {missedReminders.length > 0 && (
+        <section className="missed-section" aria-labelledby="missed-title">
+          <div className="missed-heading">
+            <h2 id="missed-title">Missed</h2>
+            <span>{missedReminders.length}</span>
+          </div>
+          <div className="missed-list">
+            {missedReminders.map((reminder) => (
+              <ReminderChip
+                key={reminder.id}
+                reminder={reminder}
+                overdueLabel={formatTimeAgo(reminder.scheduledAt, now)}
+                onPointerDrag={beginPointerDrag}
+                onEdit={beginEditingReminder}
+                onComplete={complete}
+                onDelete={remove}
+              />
+            ))}
+          </div>
+          <p>Drag onto the timeline to reschedule.</p>
+        </section>
+      )}
 
       <section className="timeline-section" aria-labelledby="timeline-title">
         <h2 id="timeline-title">Next {formatTimelineDuration(timelineDuration)}</h2>
@@ -625,6 +685,7 @@ export default function App() {
           settings={settings}
           manualUpdateStatus={manualUpdateStatus}
           soundSaving={soundSaving}
+          autostartSaving={autostartSaving}
           onChange={changeSettings}
           onSoundChange={(sound) => void changeNotificationSound(sound)}
           onPreviewSound={(sound) => void previewNotificationSound(sound)}

@@ -7,11 +7,23 @@ const inTauri = "__TAURI_INTERNALS__" in window;
 
 function readPreview(): Reminder[] {
   const saved = localStorage.getItem(STORAGE_KEY);
-  if (saved) return JSON.parse(saved) as Reminder[];
+  if (saved) {
+    const now = Date.now();
+    let changed = false;
+    const reminders = (JSON.parse(saved) as Reminder[]).map((reminder) => {
+      if (!reminder.completed && reminder.notifiedAt == null && reminder.missedAt == null && reminder.scheduledAt <= now) {
+        changed = true;
+        return { ...reminder, notifiedAt: now, missedAt: now };
+      }
+      return reminder;
+    });
+    if (changed) writePreview(reminders);
+    return reminders;
+  }
 
   const first = nextFiveMinuteSlot(Date.now()) + FIVE_MINUTES;
   const seeded: Reminder[] = [
-    { id: crypto.randomUUID(), title: "Call Mum", scheduledAt: first, completed: false, notifiedAt: null },
+    { id: crypto.randomUUID(), title: "Call Mum", scheduledAt: first, completed: false, notifiedAt: null, missedAt: null },
   ];
   writePreview(seeded);
   return seeded;
@@ -37,6 +49,7 @@ export const reminderApi = {
       scheduledAt,
       completed: false,
       notifiedAt: null,
+      missedAt: null,
     };
     writePreview([...reminders, reminder]);
     return reminder;
@@ -47,7 +60,7 @@ export const reminderApi = {
     let changed: Reminder | undefined;
     const reminders = readPreview().map((reminder) => {
       if (reminder.id !== id) return reminder;
-      changed = { ...reminder, scheduledAt, completed: false, notifiedAt: null };
+      changed = { ...reminder, scheduledAt, completed: false, notifiedAt: null, missedAt: null };
       return changed;
     });
     if (!changed) throw new Error("Reminder not found");
@@ -60,7 +73,7 @@ export const reminderApi = {
     let changed: Reminder | undefined;
     const reminders = readPreview().map((reminder) => {
       if (reminder.id !== id) return reminder;
-      changed = { ...reminder, title, scheduledAt, completed: false, notifiedAt: null };
+      changed = { ...reminder, title, scheduledAt, completed: false, notifiedAt: null, missedAt: null };
       return changed;
     });
     if (!changed) throw new Error("Reminder not found");

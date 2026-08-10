@@ -2,9 +2,9 @@
 
 A compact Windows tray reminder built with Tauri 2, Rust, React, and TypeScript.
 
-Press `Ctrl+Alt+R`, type a reminder, and place it on the next 90 minutes. Reminders stay on the device, use native Windows notifications, and are removed after they fire.
+Press `Ctrl+Alt+R`, type a reminder, and place it on the timeline. Reminders stay on the device and use native Windows notifications. If the PC was asleep or the app was closed, overdue reminders stay available in a temporary Missed section until they are completed, deleted, or rescheduled.
 
-Settings include light and dark appearance, 1, 5, or 15-minute timeline spacing, offline notification sounds, manual update checking, and app information. Preferences and reminders remain on the device across automatic updates.
+Settings include start-on-login (enabled by default), light and dark appearance, 1, 5, or 15-minute timeline spacing, offline notification sounds, manual update checking, and app information. Preferences and reminders remain on the device across automatic updates.
 
 [![Download for Windows](https://img.shields.io/badge/Download_for_Windows-171717?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/fishcake-coder/remind-me/releases/latest/download/Remind.Me-setup.exe)
 

@@ -74,6 +74,10 @@ button { -webkit-tap-highlight-color: transparent; }
   background: var(--surface);
 }
 
+.app-shell.has-missed {
+  grid-template-rows: 44px 52px auto minmax(0, 1fr);
+}
+
 .utility-header {
   display: flex;
   align-items: center;
@@ -198,6 +202,53 @@ button { -webkit-tap-highlight-color: transparent; }
   min-height: 0;
   display: grid;
   grid-template-rows: 32px minmax(0, 1fr);
+}
+
+.missed-section {
+  margin: 7px 16px 4px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--surface-raised);
+}
+
+.missed-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.missed-heading h2 {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.missed-heading span {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 9px;
+  color: var(--muted);
+  background: var(--soft);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.missed-list {
+  max-height: 105px;
+  display: grid;
+  gap: 4px;
+  overflow-y: auto;
+  scrollbar-color: var(--input-border) transparent;
+  scrollbar-width: thin;
+}
+
+.missed-section > p {
+  margin: 6px 2px 0;
+  color: var(--muted);
+  font-size: 10.5px;
 }
 
 .timeline-section h2 {
@@ -377,6 +428,27 @@ button { -webkit-tap-highlight-color: transparent; }
   white-space: nowrap;
 }
 
+.chip-title span {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-title small {
+  flex: 0 0 auto;
+  margin-left: 7px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 550;
+}
+
+.missed-list .chip-title {
+  display: flex;
+  align-items: center;
+}
+
 .chip-title:hover { color: var(--accent); }
 .chip-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
@@ -526,6 +598,37 @@ button { -webkit-tap-highlight-color: transparent; }
 
 .settings-group legend { margin-bottom: 8px; font-size: 13px; font-weight: 700; }
 .settings-group p { margin: -3px 0 9px; color: var(--muted); font-size: 11.5px; line-height: 1.4; }
+
+.settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 43px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.settings-toggle > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-weight: 650;
+}
+
+.settings-toggle small {
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+.settings-toggle input {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
 
 .segmented-control {
   display: grid;

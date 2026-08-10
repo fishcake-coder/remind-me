@@ -29,6 +29,8 @@ struct Reminder {
     scheduled_at: i64,
     completed: bool,
     notified_at: Option<i64>,
+    #[serde(default)]
+    missed_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,6 +58,8 @@ impl NotificationSound {
 const DEFAULT_SNOOZE_DURATIONS: [i64; 3] = [5, 15, 30];
 const MIN_SNOOZE_MINUTES: i64 = 1;
 const MAX_SNOOZE_MINUTES: i64 = 7 * 24 * 60;
+const SCHEDULER_INTERVAL: Duration = Duration::from_secs(3);
+const RESUME_GAP_MILLIS: i64 = 8_000;
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -267,6 +271,7 @@ fn create_reminder(
         scheduled_at,
         completed: false,
         notified_at: None,
+        missed_at: None,
     };
     let mut reminders = state
         .reminders
@@ -314,6 +319,7 @@ fn update_reminder_record(
     }
     reminder.completed = false;
     reminder.notified_at = None;
+    reminder.missed_at = None;
     let moved = reminder.clone();
     updated.sort_by_key(|item| item.scheduled_at);
     state.persist(&updated)?;
@@ -388,14 +394,23 @@ fn set_snooze_durations(durations: [i64; 3], state: State<'_, SnoozeState>) -> R
     state.set(durations)
 }
 
-fn persist_due_tombstones(state: &ReminderState, now: i64) -> Result<Vec<Reminder>, String> {
+fn claim_due_reminders(
+    state: &ReminderState,
+    now: i64,
+    missed: bool,
+) -> Result<Vec<Reminder>, String> {
     let mut reminders = state
         .reminders
         .lock()
         .map_err(|_| "Reminder storage is unavailable".to_string())?;
     let due: Vec<Reminder> = reminders
         .iter()
-        .filter(|item| !item.completed && item.notified_at.is_none() && item.scheduled_at <= now)
+        .filter(|item| {
+            !item.completed
+                && item.notified_at.is_none()
+                && item.missed_at.is_none()
+                && item.scheduled_at <= now
+        })
         .cloned()
         .collect();
     if due.is_empty() {
@@ -403,16 +418,42 @@ fn persist_due_tombstones(state: &ReminderState, now: i64) -> Result<Vec<Reminde
     }
 
     let due_ids: std::collections::HashSet<Uuid> = due.iter().map(|item| item.id).collect();
-    let mut tombstoned = reminders.clone();
-    for reminder in &mut tombstoned {
+    let mut claimed = reminders.clone();
+    for reminder in &mut claimed {
         if due_ids.contains(&reminder.id) {
-            reminder.completed = true;
             reminder.notified_at = Some(now);
+            if missed {
+                reminder.missed_at = Some(now);
+            } else {
+                reminder.completed = true;
+            }
         }
     }
-    state.persist(&tombstoned)?;
-    *reminders = tombstoned;
+    state.persist(&claimed)?;
+    *reminders = claimed;
     Ok(due)
+}
+
+fn retain_failed_notification_as_missed(
+    id: Uuid,
+    now: i64,
+    state: &ReminderState,
+) -> Result<bool, String> {
+    let mut reminders = state
+        .reminders
+        .lock()
+        .map_err(|_| "Reminder storage is unavailable".to_string())?;
+    let mut restored = reminders.clone();
+    let Some(reminder) = restored.iter_mut().find(|item| {
+        item.id == id && item.completed && item.notified_at.is_some() && item.missed_at.is_none()
+    }) else {
+        return Ok(false);
+    };
+    reminder.completed = false;
+    reminder.missed_at = Some(now);
+    state.persist(&restored)?;
+    *reminders = restored;
+    Ok(true)
 }
 
 fn prune_delivered(state: &ReminderState) -> Result<bool, String> {
@@ -459,11 +500,16 @@ fn snooze_reminder(
     let mut updated = reminders.clone();
     let reminder = updated
         .iter_mut()
-        .find(|item| item.id == id && item.completed && item.notified_at.is_some())
+        .find(|item| {
+            item.id == id
+                && item.notified_at.is_some()
+                && (item.completed || item.missed_at.is_some())
+        })
         .ok_or_else(|| "Reminder is no longer available to snooze".to_string())?;
     reminder.scheduled_at = scheduled_at;
     reminder.completed = false;
     reminder.notified_at = None;
+    reminder.missed_at = None;
     let snoozed = reminder.clone();
     updated.sort_by_key(|item| item.scheduled_at);
     reminder_state.persist(&updated)?;
@@ -495,12 +541,19 @@ fn show_reminder_notification(
     snooze_state: SnoozeState,
     reminder: &Reminder,
     sound: NotificationSound,
+    overdue: bool,
 ) -> Result<(), String> {
     let durations = snooze_state.current()?;
     let mut toast = Toast::new(&app.config().identifier)
         .title("Remind Me")
         .text1(&reminder.title)
         .duration(ToastDuration::Long);
+    if overdue {
+        toast = toast.text2(&format_overdue(
+            reminder.scheduled_at,
+            Utc::now().timestamp_millis(),
+        ));
+    }
     for (index, minutes) in durations.into_iter().enumerate() {
         let label = if minutes == 1 {
             format!("Snooze {minutes} minute")
@@ -569,12 +622,18 @@ fn show_reminder_notification(
     _snooze_state: SnoozeState,
     reminder: &Reminder,
     sound: NotificationSound,
+    overdue: bool,
 ) -> Result<(), String> {
-    let builder = app
-        .notification()
-        .builder()
-        .title("Remind Me")
-        .body(&reminder.title);
+    let body = if overdue {
+        format!(
+            "{} — {}",
+            reminder.title,
+            format_overdue(reminder.scheduled_at, Utc::now().timestamp_millis())
+        )
+    } else {
+        reminder.title.clone()
+    };
+    let builder = app.notification().builder().title("Remind Me").body(&body);
     if sound == NotificationSound::Default {
         builder
             .sound("Default")
@@ -589,51 +648,187 @@ fn show_reminder_notification(
     Ok(())
 }
 
+fn format_overdue(scheduled_at: i64, now: i64) -> String {
+    let elapsed_minutes = now.saturating_sub(scheduled_at) / 60_000;
+    match elapsed_minutes {
+        0 => "Was due less than a minute ago".into(),
+        1 => "Was due 1 minute ago".into(),
+        2..=59 => format!("Was due {elapsed_minutes} minutes ago"),
+        60..=119 => "Was due 1 hour ago".into(),
+        120..=1_439 => format!("Was due {} hours ago", elapsed_minutes / 60),
+        1_440..=2_879 => "Was due 1 day ago".into(),
+        _ => format!("Was due {} days ago", elapsed_minutes / 1_440),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MissedNotificationPlan {
+    None,
+    Single,
+    Summary(usize),
+}
+
+fn missed_notification_plan(count: usize) -> MissedNotificationPlan {
+    match count {
+        0 => MissedNotificationPlan::None,
+        1 => MissedNotificationPlan::Single,
+        count => MissedNotificationPlan::Summary(count),
+    }
+}
+
+#[cfg(windows)]
+fn show_missed_summary_notification(
+    app: &AppHandle,
+    count: usize,
+    sound_state: &SoundState,
+    sound: NotificationSound,
+) -> Result<(), String> {
+    let activation_app = app.clone();
+    let mut toast = Toast::new(&app.config().identifier)
+        .title("Remind Me")
+        .text1(&format!("{count} reminders were missed"))
+        .text2("Open Remind Me to review them")
+        .duration(ToastDuration::Long)
+        .on_activated(move |_| {
+            show_main_window(&activation_app);
+            Ok(())
+        });
+    toast = if sound == NotificationSound::Default {
+        toast.sound(Some(ToastSound::Default))
+    } else {
+        toast.sound(None)
+    };
+    toast.show().map_err(|error| error.to_string())?;
+    if sound != NotificationSound::Default && sound != NotificationSound::None {
+        let _ = play_notification_sound(sound, &sound_state.resource_dir);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn show_missed_summary_notification(
+    app: &AppHandle,
+    count: usize,
+    sound_state: &SoundState,
+    sound: NotificationSound,
+) -> Result<(), String> {
+    let builder = app
+        .notification()
+        .builder()
+        .title(format!("{count} reminders were missed"))
+        .body("Open Remind Me to review them");
+    if sound == NotificationSound::Default {
+        builder
+            .sound("Default")
+            .show()
+            .map_err(|error| error.to_string())?;
+    } else {
+        builder.show().map_err(|error| error.to_string())?;
+        if sound != NotificationSound::None {
+            let _ = play_notification_sound(sound, &sound_state.resource_dir);
+        }
+    }
+    Ok(())
+}
+
+fn process_due_reminders(
+    app: &AppHandle,
+    reminder_state: &ReminderState,
+    sound_state: &SoundState,
+    snooze_state: &SnoozeState,
+    now: i64,
+    missed: bool,
+) {
+    let due = match claim_due_reminders(reminder_state, now, missed) {
+        Ok(due) => due,
+        Err(error) => {
+            eprintln!("Could not save due reminders: {error}");
+            return;
+        }
+    };
+    if due.is_empty() {
+        return;
+    }
+
+    let _ = app.emit("reminders-changed", ());
+    let sound = sound_state.current().unwrap_or_default();
+    if missed {
+        match missed_notification_plan(due.len()) {
+            MissedNotificationPlan::Summary(count) => {
+                if let Err(error) = show_missed_summary_notification(app, count, sound_state, sound)
+                {
+                    eprintln!("Could not show missed reminder summary: {error}");
+                }
+                return;
+            }
+            MissedNotificationPlan::None => return,
+            MissedNotificationPlan::Single => {}
+        }
+    }
+
+    #[cfg(windows)]
+    reminder_state.mark_notifications_pending(&due);
+    for reminder in &due {
+        if let Err(error) = show_reminder_notification(
+            app,
+            reminder_state.clone(),
+            sound_state.clone(),
+            snooze_state.clone(),
+            reminder,
+            sound,
+            missed,
+        ) {
+            eprintln!("Could not show reminder notification: {error}");
+            reminder_state.clear_pending_notification(reminder.id);
+            if !missed
+                && retain_failed_notification_as_missed(reminder.id, now, reminder_state)
+                    .unwrap_or(false)
+            {
+                let _ = app.emit("reminders-changed", ());
+            }
+        }
+    }
+
+    #[cfg(not(windows))]
+    if !missed && prune_delivered(reminder_state).unwrap_or(false) {
+        let _ = app.emit("reminders-changed", ());
+    }
+}
+
 fn start_scheduler(
     app: AppHandle,
     reminder_state: ReminderState,
     sound_state: SoundState,
     snooze_state: SnoozeState,
 ) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(3));
-        if prune_delivered(&reminder_state).unwrap_or(false) {
-            let _ = app.emit("reminders-changed", ());
-        }
+    thread::spawn(move || {
+        let mut last_check = Utc::now().timestamp_millis();
+        process_due_reminders(
+            &app,
+            &reminder_state,
+            &sound_state,
+            &snooze_state,
+            last_check,
+            true,
+        );
 
-        let now = Utc::now().timestamp_millis();
-        let due = match persist_due_tombstones(&reminder_state, now) {
-            Ok(due) => due,
-            Err(_) => continue,
-        };
-        if due.is_empty() {
-            continue;
-        }
-
-        #[cfg(windows)]
-        reminder_state.mark_notifications_pending(&due);
-        let _ = app.emit("reminders-changed", ());
-        let sound = sound_state.current().unwrap_or_default();
-        for reminder in &due {
-            if let Err(error) = show_reminder_notification(
-                &app,
-                reminder_state.clone(),
-                sound_state.clone(),
-                snooze_state.clone(),
-                reminder,
-                sound,
-            ) {
-                eprintln!("Could not show reminder notification: {error}");
-                reminder_state.clear_pending_notification(reminder.id);
-                if prune_delivered(&reminder_state).unwrap_or(false) {
-                    let _ = app.emit("reminders-changed", ());
-                }
+        loop {
+            thread::sleep(SCHEDULER_INTERVAL);
+            if prune_delivered(&reminder_state).unwrap_or(false) {
+                let _ = app.emit("reminders-changed", ());
             }
-        }
 
-        #[cfg(not(windows))]
-        if prune_delivered(&reminder_state).unwrap_or(false) {
-            let _ = app.emit("reminders-changed", ());
+            let now = Utc::now().timestamp_millis();
+            let resumed = now.saturating_sub(last_check) > RESUME_GAP_MILLIS;
+            process_due_reminders(
+                &app,
+                &reminder_state,
+                &sound_state,
+                &snooze_state,
+                now,
+                resumed,
+            );
+            last_check = now;
         }
     });
 }
@@ -713,6 +908,10 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--autostart"]),
+        ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_process::init())
@@ -766,7 +965,10 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-            show_main_window(app.handle());
+            let launched_for_autostart = std::env::args().any(|argument| argument == "--autostart");
+            if !launched_for_autostart {
+                show_main_window(app.handle());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -803,6 +1005,7 @@ mod tests {
             scheduled_at,
             completed: false,
             notified_at: None,
+            missed_at: None,
         }
     }
 
@@ -843,7 +1046,7 @@ mod tests {
             pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
 
-        let due = persist_due_tombstones(&state, 200).unwrap();
+        let due = claim_due_reminders(&state, 200, false).unwrap();
         assert_eq!(due.len(), 1);
         let saved = read_reminders(&data_file).unwrap();
         assert!(saved[0].completed);
@@ -866,7 +1069,7 @@ mod tests {
             pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
 
-        assert!(persist_due_tombstones(&state, 200).is_err());
+        assert!(claim_due_reminders(&state, 200, false).is_err());
         let reminders = state.reminders.lock().unwrap();
         assert!(!reminders[0].completed);
         assert_eq!(reminders[0].notified_at, None);
@@ -898,7 +1101,7 @@ mod tests {
             data_file: data_file.clone(),
             pending_notifications: Arc::new(Mutex::new(HashSet::new())),
         };
-        assert_eq!(persist_due_tombstones(&state, 200).unwrap().len(), 1);
+        assert_eq!(claim_due_reminders(&state, 200, false).unwrap().len(), 1);
 
         let blocked_parent = directory.join("not-a-directory");
         fs::write(&blocked_parent, b"blocked").unwrap();
@@ -908,13 +1111,15 @@ mod tests {
             pending_notifications: state.pending_notifications.clone(),
         };
         assert!(prune_delivered(&blocked_state).is_err());
-        assert!(persist_due_tombstones(&blocked_state, 300)
+        assert!(claim_due_reminders(&blocked_state, 300, false)
             .unwrap()
             .is_empty());
 
         let restarted = ReminderState::load(data_file.clone());
         assert!(restarted.reminders.lock().unwrap().is_empty());
-        assert!(persist_due_tombstones(&restarted, 300).unwrap().is_empty());
+        assert!(claim_due_reminders(&restarted, 300, false)
+            .unwrap()
+            .is_empty());
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -995,6 +1200,93 @@ mod tests {
         assert_eq!(saved[0].id, reminder_id);
         assert!(!saved[0].completed);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn missed_reminders_remain_active_and_survive_restart() {
+        let directory = std::env::temp_dir().join(format!("remind-me-test-{}", Uuid::new_v4()));
+        let data_file = directory.join("reminders.json");
+        let reminder = test_reminder(100);
+        let state = ReminderState {
+            reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
+            data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
+        };
+
+        assert_eq!(claim_due_reminders(&state, 200, true).unwrap().len(), 1);
+        let saved = read_reminders(&data_file).unwrap();
+        assert!(!saved[0].completed);
+        assert_eq!(saved[0].notified_at, Some(200));
+        assert_eq!(saved[0].missed_at, Some(200));
+        assert!(!prune_delivered(&state).unwrap());
+
+        let restarted = ReminderState::load(data_file.clone());
+        let reminders = restarted.reminders.lock().unwrap();
+        assert_eq!(reminders.len(), 1);
+        assert_eq!(reminders[0].id, reminder.id);
+        assert_eq!(reminders[0].missed_at, Some(200));
+        drop(reminders);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rescheduling_a_missed_reminder_returns_it_to_the_timeline() {
+        let directory = std::env::temp_dir().join(format!("remind-me-test-{}", Uuid::new_v4()));
+        let data_file = directory.join("reminders.json");
+        let mut reminder = test_reminder(100);
+        reminder.notified_at = Some(200);
+        reminder.missed_at = Some(200);
+        let state = ReminderState {
+            reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
+            data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
+        };
+        let new_time = Utc::now().timestamp_millis() + 60_000;
+
+        let moved = update_reminder_record(reminder.id, None, new_time, &state).unwrap();
+
+        assert_eq!(moved.scheduled_at, new_time);
+        assert_eq!(moved.notified_at, None);
+        assert_eq!(moved.missed_at, None);
+        assert!(!moved.completed);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn notification_failure_keeps_a_normal_due_reminder_as_missed() {
+        let directory = std::env::temp_dir().join(format!("remind-me-test-{}", Uuid::new_v4()));
+        let data_file = directory.join("reminders.json");
+        let reminder = test_reminder(100);
+        let state = ReminderState {
+            reminders: Arc::new(Mutex::new(vec![reminder.clone()])),
+            data_file: data_file.clone(),
+            pending_notifications: Arc::new(Mutex::new(HashSet::new())),
+        };
+        claim_due_reminders(&state, 200, false).unwrap();
+
+        assert!(retain_failed_notification_as_missed(reminder.id, 250, &state).unwrap());
+        let saved = read_reminders(&data_file).unwrap();
+        assert!(!saved[0].completed);
+        assert_eq!(saved[0].notified_at, Some(200));
+        assert_eq!(saved[0].missed_at, Some(250));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn formats_overdue_duration_for_notifications() {
+        assert_eq!(format_overdue(0, 30_000), "Was due less than a minute ago");
+        assert_eq!(format_overdue(0, 27 * 60_000), "Was due 27 minutes ago");
+        assert_eq!(format_overdue(0, 2 * 60 * 60_000), "Was due 2 hours ago");
+    }
+
+    #[test]
+    fn missed_batches_choose_one_toast_or_a_summary() {
+        assert_eq!(missed_notification_plan(0), MissedNotificationPlan::None);
+        assert_eq!(missed_notification_plan(1), MissedNotificationPlan::Single);
+        assert_eq!(
+            missed_notification_plan(3),
+            MissedNotificationPlan::Summary(3)
+        );
     }
 
     #[test]

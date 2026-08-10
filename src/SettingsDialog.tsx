@@ -28,6 +28,7 @@ type SettingsDialogProps = {
   settings: AppSettings;
   manualUpdateStatus: ManualUpdateStatus;
   soundSaving: boolean;
+  autostartSaving: boolean;
   onChange: (settings: AppSettings) => void;
   onSoundChange: (sound: NotificationSound) => void;
   onPreviewSound: (sound: NotificationSound) => void;
@@ -54,6 +55,7 @@ export function SettingsDialog({
   settings,
   manualUpdateStatus,
   soundSaving,
+  autostartSaving,
   onChange,
   onSoundChange,
   onPreviewSound,
@@ -175,6 +177,22 @@ export function SettingsDialog({
                 </button>
               ))}
             </div>
+          </fieldset>
+
+          <fieldset className="settings-group">
+            <legend>Windows</legend>
+            <label className="settings-toggle">
+              <span>
+                Start when I sign in
+                <small>Runs quietly in the tray so missed reminders can be detected.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.startOnLogin}
+                disabled={autostartSaving}
+                onChange={(event) => onChange({ ...settings, startOnLogin: event.target.checked })}
+              />
+            </label>
           </fieldset>
 
           <fieldset className="settings-group">

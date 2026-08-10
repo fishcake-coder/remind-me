@@ -4,6 +4,7 @@ export type Reminder = {
   scheduledAt: number;
   completed: boolean;
   notifiedAt: number | null;
+  missedAt: number | null;
 };
 
 export type DragPayload =

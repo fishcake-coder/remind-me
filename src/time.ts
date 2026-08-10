@@ -41,6 +41,14 @@ export function formatTime(timestamp: number): string {
   }).format(timestamp);
 }
 
+export function formatTimeAgo(timestamp: number, now: number): string {
+  const elapsedMinutes = Math.max(0, Math.floor((now - timestamp) / ONE_MINUTE));
+  if (elapsedMinutes < 1) return "now";
+  if (elapsedMinutes < 60) return `${elapsedMinutes}m ago`;
+  if (elapsedMinutes < 24 * 60) return `${Math.floor(elapsedMinutes / 60)}h ago`;
+  return `${Math.floor(elapsedMinutes / (24 * 60))}d ago`;
+}
+
 export function buildTimeSlots(
   now: number,
   intervalMinutes = 5,
@@ -51,13 +59,13 @@ export function buildTimeSlots(
   const start = nextIntervalSlot(now, intervalMinutes);
   const end = now + durationMinutes * ONE_MINUTE;
   const timestamps = new Set<number>();
+  const included = includedTimestamps.filter((timestamp) => timestamp > now && timestamp <= end);
+  const includedLabels = new Set(included.map(formatTime));
 
   for (let timestamp = start; timestamp <= end; timestamp += interval) {
-    timestamps.add(timestamp);
+    if (!includedLabels.has(formatTime(timestamp))) timestamps.add(timestamp);
   }
-  for (const timestamp of includedTimestamps) {
-    if (timestamp > now && timestamp <= end) timestamps.add(timestamp);
-  }
+  for (const timestamp of included) timestamps.add(timestamp);
 
   return [...timestamps]
     .sort((left, right) => left - right)

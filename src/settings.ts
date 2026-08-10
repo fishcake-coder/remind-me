@@ -14,6 +14,7 @@ export type AppSettings = {
   slotInterval: SlotInterval;
   notificationSound: NotificationSound;
   snoozeDurations: SnoozeDurations;
+  startOnLogin: boolean;
 };
 
 const STORAGE_KEY = "remind-me:settings:v1";
@@ -23,6 +24,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   slotInterval: 5,
   notificationSound: "default",
   snoozeDurations: [...DEFAULT_SNOOZE_DURATIONS],
+  startOnLogin: true,
 };
 
 export function normalizeSnoozeDurations(value: unknown): SnoozeDurations {
@@ -50,7 +52,14 @@ export function loadSettings(): AppSettings {
     const notificationSound = NOTIFICATION_SOUNDS.includes(parsed.notificationSound as NotificationSound)
       ? parsed.notificationSound as NotificationSound
       : DEFAULT_SETTINGS.notificationSound;
-    return { theme, slotInterval, notificationSound, snoozeDurations: normalizeSnoozeDurations(parsed.snoozeDurations) };
+    const startOnLogin = parsed.startOnLogin !== false;
+    return {
+      theme,
+      slotInterval,
+      notificationSound,
+      snoozeDurations: normalizeSnoozeDurations(parsed.snoozeDurations),
+      startOnLogin,
+    };
   } catch {
     return { ...DEFAULT_SETTINGS, snoozeDurations: [...DEFAULT_SNOOZE_DURATIONS] };
   }

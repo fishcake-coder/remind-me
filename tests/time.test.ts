@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildTimeSlots, formatTimelineDuration, nextIntervalSlot, ONE_MINUTE, timelineDurationMinutes } from "../src/time.ts";
+import { buildTimeSlots, formatTime, formatTimeAgo, formatTimelineDuration, nextIntervalSlot, ONE_MINUTE, timelineDurationMinutes } from "../src/time.ts";
 
 const at = (hour: number, minute: number, second = 0) => Date.UTC(2026, 6, 19, hour, minute, second);
 
@@ -34,6 +34,15 @@ test("an exact off-grid reminder stays attached to its scheduled time", () => {
   assert.deepEqual(slots.map((slot) => slot.timestamp), [...slots].map((slot) => slot.timestamp).sort((a, b) => a - b));
 });
 
+test("an off-grid reminder does not duplicate a minute grid label", () => {
+  const now = at(12, 3, 42);
+  const reminderTime = at(12, 18, 42);
+  const slots = buildTimeSlots(now, 1, 90, [reminderTime]);
+
+  assert.ok(slots.some((slot) => slot.timestamp === reminderTime));
+  assert.equal(slots.filter((slot) => slot.label === formatTime(reminderTime)).length, 1);
+});
+
 test("each interval renders ninety grid slots over a proportionally longer range", () => {
   const now = at(12, 3, 20);
   for (const interval of [1, 5, 15]) {
@@ -45,4 +54,11 @@ test("each interval renders ninety grid slots over a proportionally longer range
   assert.equal(formatTimelineDuration(timelineDurationMinutes(1)), "90 min");
   assert.equal(formatTimelineDuration(timelineDurationMinutes(5)), "7 hr 30 min");
   assert.equal(formatTimelineDuration(timelineDurationMinutes(15)), "22 hr 30 min");
+});
+
+test("missed reminders use compact elapsed labels", () => {
+  const now = at(12, 30);
+  assert.equal(formatTimeAgo(now - 20_000, now), "now");
+  assert.equal(formatTimeAgo(now - 27 * ONE_MINUTE, now), "27m ago");
+  assert.equal(formatTimeAgo(now - 2 * 60 * ONE_MINUTE, now), "2h ago");
 });
