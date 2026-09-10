@@ -4,6 +4,18 @@ export const ONE_MINUTE = 60 * 1000;
 export const FIVE_MINUTES = 5 * 60 * 1000;
 export const TIMELINE_SLOT_COUNT = 90;
 
+// Labels change on minute boundaries. Exact reminder times can also enter or
+// leave the visible window between minutes, so wake at those boundaries too.
+export function nextTimelineRefresh(now: number, durationMinutes: number, timestamps: number[]): number {
+  let next = Math.floor(now / ONE_MINUTE) * ONE_MINUTE + ONE_MINUTE;
+  for (const timestamp of timestamps) {
+    for (const boundary of [timestamp, timestamp - durationMinutes * ONE_MINUTE]) {
+      if (boundary > now && boundary < next) next = boundary;
+    }
+  }
+  return Math.max(1, next - now);
+}
+
 export function timelineDurationMinutes(intervalMinutes: number): number {
   return intervalMinutes * TIMELINE_SLOT_COUNT;
 }
@@ -33,12 +45,14 @@ export function nextFiveMinuteSlot(timestamp: number): number {
   return nextIntervalSlot(timestamp, 5);
 }
 
+const timeFormatter = new Intl.DateTimeFormat(undefined, {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+});
+
 export function formatTime(timestamp: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }).format(timestamp);
+  return timeFormatter.format(timestamp);
 }
 
 export function formatTimeAgo(timestamp: number, now: number): string {

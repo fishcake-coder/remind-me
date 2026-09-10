@@ -3,6 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { autostartApi } from "./autostartApi";
 import { dragAutoScrollVelocity } from "./drag";
+import { loadDraft, saveDraft } from "./draft";
 import { CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
 import { reminderApi } from "./reminderApi";
 import { SettingsDialog } from "./SettingsDialog";
@@ -11,7 +12,7 @@ import { loadSettings, saveSettings } from "./settings";
 import type { AppSettings, NotificationSound } from "./settings";
 import { snoozeApi } from "./snoozeApi";
 import { soundApi } from "./soundApi";
-import { buildTimeSlots, formatTime, formatTimeAgo, formatTimelineDuration, nextIntervalSlot, timelineDurationMinutes } from "./time";
+import { buildTimeSlots, formatTime, formatTimeAgo, formatTimelineDuration, nextIntervalSlot, nextTimelineRefresh, timelineDurationMinutes } from "./time";
 import type { DragPayload, Reminder } from "./types";
 import { UpdateDialog } from "./UpdateDialog";
 import { updateApi } from "./updateApi";
@@ -19,7 +20,6 @@ import type { AvailableUpdate } from "./updateApi";
 import "./styles.css";
 
 const REFRESH_INTERVAL = 15_000;
-const CLOCK_INTERVAL = 1_000;
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1_000;
 
 type PointerDrag = {
@@ -71,8 +71,9 @@ function ReminderChip({ reminder, overdueLabel, onPointerDrag, onEdit, onComplet
 }
 
 export default function App() {
+  const [initialDraft] = useState(loadDraft);
   const [reminders, setReminders] = useState<Reminder[]>([]);
-  const [title, setTitle] = useState("");
+  const [title, setTitle] = useState(initialDraft.title);
   const [now, setNow] = useState(Date.now());
   const [dragOver, setDragOver] = useState<number | null>(null);
   const [dragPosition, setDragPosition] = useState<DragPosition | null>(null);
@@ -86,7 +87,7 @@ export default function App() {
   const [soundSaving, setSoundSaving] = useState(false);
   const [autostartSaving, setAutostartSaving] = useState(false);
   const [timelineAdvancing, setTimelineAdvancing] = useState(false);
-  const [editingReminder, setEditingReminder] = useState<Reminder | null>(null);
+  const [editingReminder, setEditingReminder] = useState<Reminder | null>(initialDraft.editingReminder);
   const inputRef = useRef<HTMLInputElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
   const activeDragRef = useRef<PointerDrag | null>(null);
@@ -100,6 +101,10 @@ export default function App() {
   const previousSlotHeightsRef = useRef(new Map<number, number>());
 
   const timelineDuration = timelineDurationMinutes(settings.slotInterval);
+
+  useEffect(() => {
+    saveDraft({ title, editingReminder });
+  }, [title, editingReminder]);
 
   const missedReminders = useMemo(
     () => reminders
@@ -139,23 +144,49 @@ export default function App() {
 
   useEffect(() => {
     void refresh();
-    const clockTimer = window.setInterval(() => setNow(Date.now()), CLOCK_INTERVAL);
-    const refreshTimer = window.setInterval(() => void refresh(), REFRESH_INTERVAL);
+    // Native changes arrive by event; polling is only needed by browser preview.
+    const refreshTimer = reminderApi.isNative ? undefined
+      : window.setInterval(() => void refresh(), REFRESH_INTERVAL);
     return () => {
-      window.clearInterval(clockTimer);
       window.clearInterval(refreshTimer);
     };
   }, [refresh]);
 
   useEffect(() => {
+    let timer: number | undefined;
+    const tick = () => {
+      window.clearTimeout(timer);
+      if (document.hidden) return;
+      const current = Date.now();
+      setNow(current);
+      timer = window.setTimeout(tick, nextTimelineRefresh(current, timelineDuration, pendingTimestamps));
+    };
+    tick();
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [pendingTimestamps, timelineDuration]);
+
+  useEffect(() => {
     if (!reminderApi.isNative) return;
+    let disposed = false;
     let unlisten: (() => void) | undefined;
     void listen("reminders-changed", () => void refresh())
       .then((stopListening) => {
-        unlisten = stopListening;
+        if (disposed) stopListening();
+        else {
+          unlisten = stopListening;
+          // Catch changes between the initial load and listener registration.
+          void refresh();
+        }
       })
       .catch(() => undefined);
-    return () => unlisten?.();
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, [refresh]);
 
   useLayoutEffect(() => {

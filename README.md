@@ -6,6 +6,8 @@ Press `Ctrl+Alt+R`, type a reminder, and place it on the timeline. Reminders sta
 
 Settings include start-on-login (enabled by default), light and dark appearance, 1, 5, or 15-minute timeline spacing, offline notification sounds, manual update checking, and app information. Preferences and reminders remain on the device across automatic updates.
 
+Closing the window releases the UI and its WebView2 processes. The native tray and reminder scheduler keep running, and login startup creates no browser window. Open the UI again with the tray, `Ctrl+Alt+R`, or the app shortcut; unfinished composer text is restored. Choose **Quit** in the tray menu to stop the app and its background reminders completely.
+
 [![Download for Windows](https://img.shields.io/badge/Download_for_Windows-171717?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/fishcake-coder/remind-me/releases/latest/download/Remind.Me-setup.exe)
 
 One installer automatically selects the native x64 or ARM64 version for your Windows computer.
@@ -21,7 +23,7 @@ npm run tauri dev
 
 ## Releases and automatic updates
 
-The app checks for signed updates when it starts and every six hours. Releases include a universal Windows installer plus signed native x64 and ARM64 update packages built by GitHub Actions.
+The app checks for signed updates when the UI opens and every six hours while it remains open. Releases include a universal Windows installer plus signed native x64 and ARM64 update packages built by GitHub Actions.
 
 To publish a release:
 

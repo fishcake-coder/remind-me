@@ -12,7 +12,7 @@ use std::{
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter, Manager, State, WindowEvent,
+    AppHandle, Emitter, Manager, RunEvent, State, WebviewWindowBuilder,
 };
 use tauri_plugin_global_shortcut::ShortcutState;
 #[cfg(not(windows))]
@@ -60,6 +60,7 @@ const MIN_SNOOZE_MINUTES: i64 = 1;
 const MAX_SNOOZE_MINUTES: i64 = 7 * 24 * 60;
 const SCHEDULER_INTERVAL: Duration = Duration::from_secs(3);
 const RESUME_GAP_MILLIS: i64 = 8_000;
+static MAIN_WINDOW_OPEN: Mutex<()> = Mutex::new(());
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -462,6 +463,14 @@ fn prune_delivered(state: &ReminderState) -> Result<bool, String> {
         .reminders
         .lock()
         .map_err(|_| "Reminder storage is unavailable".to_string())?;
+    // The idle scheduler usually has nothing to prune. Avoid cloning the entire
+    // reminder store (including every title) on each tick.
+    if !reminders
+        .iter()
+        .any(|item| item.completed && !pending_ids.contains(&item.id))
+    {
+        return Ok(false);
+    }
     let retained: Vec<Reminder> = reminders
         .iter()
         .filter(|item| !item.completed || pending_ids.contains(&item.id))
@@ -881,14 +890,36 @@ fn play_notification_sound(_sound: NotificationSound, _resource_dir: &Path) -> R
 }
 
 fn show_main_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    // WebView2 creation must run outside synchronous Windows event handlers.
+    // Serialize requests so simultaneous tray/shortcut/toast activations cannot
+    // create duplicate windows. No worker remains once the window is open.
+    let handle = app.clone();
+    thread::spawn(move || {
+        let Ok(_opening) = MAIN_WINDOW_OPEN.lock() else {
+            return;
+        };
+        let window = match handle.get_webview_window("main") {
+            Some(window) => window,
+            None => {
+                let config = &handle.config().app.windows[0];
+                match WebviewWindowBuilder::from_config(&handle, config)
+                    .and_then(|builder| builder.build())
+                {
+                    Ok(window) => window,
+                    Err(error) => {
+                        eprintln!("Could not open Remind Me: {error}");
+                        return;
+                    }
+                }
+            }
+        };
         let _ = window.unminimize();
         let _ = window.center();
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window
             .eval("window.setTimeout(() => document.getElementById('reminder-title')?.focus(), 0)");
-    }
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -971,12 +1002,6 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = window.hide();
-            }
-        })
         .invoke_handler(tauri::generate_handler![
             list_reminders,
             create_reminder,
@@ -990,8 +1015,18 @@ pub fn run() {
             get_snooze_durations,
             set_snooze_durations
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Remind Me");
+        .build(tauri::generate_context!())
+        .expect("error while building Remind Me")
+        .run(|_app, event| {
+            // Closing the UI releases WebView2, but reminders and the tray live
+            // on. Explicit Quit (Some(0)) and updater restarts must still exit.
+            if let RunEvent::ExitRequested {
+                code: None, api, ..
+            } = event
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
 #[cfg(test)]
