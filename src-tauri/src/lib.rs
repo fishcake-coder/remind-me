@@ -20,6 +20,11 @@ use tauri_plugin_notification::NotificationExt;
 #[cfg(windows)]
 use tauri_winrt_notification::{Duration as ToastDuration, Sound as ToastSound, Toast};
 use uuid::Uuid;
+mod alarms;
+use alarms::{
+    get_alarm_audio_error, get_alarm_sound, import_alarm_sound, list_alarm_sounds,
+    preview_alarm_sound, remove_alarm_sound, set_alarm_sound, stop_alarm_preview, AlarmState,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +36,10 @@ struct Reminder {
     notified_at: Option<i64>,
     #[serde(default)]
     missed_at: Option<i64>,
+    #[serde(default)]
+    alarm_enabled: bool,
+    #[serde(default)]
+    alarm_started_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,10 +270,16 @@ fn list_reminders(state: State<'_, ReminderState>) -> Result<Vec<Reminder>, Stri
 fn create_reminder(
     title: String,
     scheduled_at: i64,
+    alarm_enabled: Option<bool>,
+    alarms: State<'_, AlarmState>,
     state: State<'_, ReminderState>,
 ) -> Result<Reminder, String> {
     if scheduled_at < Utc::now().timestamp_millis() - 1_000 {
         return Err("Choose a time that has not passed".into());
+    }
+    let alarm_enabled = alarm_enabled.unwrap_or(false);
+    if alarm_enabled {
+        alarms.validate_selected()?;
     }
     let reminder = Reminder {
         id: Uuid::new_v4(),
@@ -273,6 +288,8 @@ fn create_reminder(
         completed: false,
         notified_at: None,
         missed_at: None,
+        alarm_enabled,
+        alarm_started_at: None,
     };
     let mut reminders = state
         .reminders
@@ -291,8 +308,11 @@ fn move_reminder(
     id: Uuid,
     scheduled_at: i64,
     state: State<'_, ReminderState>,
+    alarms: State<'_, AlarmState>,
 ) -> Result<Reminder, String> {
-    update_reminder_record(id, None, scheduled_at, &state)
+    let result = update_reminder_record(id, None, scheduled_at, &state);
+    alarms.sync(&state);
+    result
 }
 
 fn update_reminder_record(
@@ -321,6 +341,7 @@ fn update_reminder_record(
     reminder.completed = false;
     reminder.notified_at = None;
     reminder.missed_at = None;
+    reminder.alarm_started_at = None;
     let moved = reminder.clone();
     updated.sort_by_key(|item| item.scheduled_at);
     state.persist(&updated)?;
@@ -333,9 +354,12 @@ fn update_reminder(
     id: Uuid,
     title: String,
     scheduled_at: i64,
+    alarms: State<'_, AlarmState>,
     state: State<'_, ReminderState>,
 ) -> Result<Reminder, String> {
-    update_reminder_record(id, Some(title), scheduled_at, &state)
+    let result = update_reminder_record(id, Some(title), scheduled_at, &state);
+    alarms.sync(&state);
+    result
 }
 
 fn remove_reminder(id: Uuid, state: &ReminderState) -> Result<(), String> {
@@ -355,13 +379,59 @@ fn remove_reminder(id: Uuid, state: &ReminderState) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn complete_reminder(id: Uuid, state: State<'_, ReminderState>) -> Result<(), String> {
-    remove_reminder(id, &state)
+fn complete_reminder(
+    id: Uuid,
+    state: State<'_, ReminderState>,
+    alarms: State<'_, AlarmState>,
+) -> Result<(), String> {
+    remove_reminder(id, &state)?;
+    alarms.sync(&state);
+    Ok(())
 }
 
 #[tauri::command]
-fn delete_reminder(id: Uuid, state: State<'_, ReminderState>) -> Result<(), String> {
-    remove_reminder(id, &state)
+fn delete_reminder(
+    id: Uuid,
+    state: State<'_, ReminderState>,
+    alarms: State<'_, AlarmState>,
+) -> Result<(), String> {
+    remove_reminder(id, &state)?;
+    alarms.sync(&state);
+    Ok(())
+}
+
+#[tauri::command]
+fn set_reminder_alarm(
+    id: Uuid,
+    enabled: bool,
+    state: State<'_, ReminderState>,
+    alarms: State<'_, AlarmState>,
+) -> Result<Reminder, String> {
+    if enabled {
+        alarms.validate_selected()?;
+    }
+    let mut items = state
+        .reminders
+        .lock()
+        .map_err(|_| "Reminder storage is unavailable")?;
+    let mut updated = items.clone();
+    let reminder = updated
+        .iter_mut()
+        .find(|item| item.id == id && !item.completed)
+        .ok_or("Reminder not found")?;
+    if enabled && reminder.scheduled_at <= Utc::now().timestamp_millis() {
+        return Err("Reschedule this reminder before enabling an alarm".into());
+    }
+    reminder.alarm_enabled = enabled;
+    if !enabled {
+        reminder.alarm_started_at = None;
+    }
+    let result = reminder.clone();
+    state.persist(&updated)?;
+    *items = updated;
+    drop(items);
+    alarms.sync(&state);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -423,7 +493,9 @@ fn claim_due_reminders(
     for reminder in &mut claimed {
         if due_ids.contains(&reminder.id) {
             reminder.notified_at = Some(now);
-            if missed {
+            if reminder.alarm_enabled {
+                reminder.alarm_started_at = Some(now);
+            } else if missed {
                 reminder.missed_at = Some(now);
             } else {
                 reminder.completed = true;
@@ -511,6 +583,7 @@ fn snooze_reminder(
         .iter_mut()
         .find(|item| {
             item.id == id
+                && !item.alarm_enabled
                 && item.notified_at.is_some()
                 && (item.completed || item.missed_at.is_some())
         })
@@ -563,7 +636,14 @@ fn show_reminder_notification(
             Utc::now().timestamp_millis(),
         ));
     }
-    for (index, minutes) in durations.into_iter().enumerate() {
+    if reminder.alarm_enabled {
+        toast = toast.text2("Alarm ringing. open Remind Me to stop it");
+    }
+    for (index, minutes) in durations
+        .into_iter()
+        .enumerate()
+        .filter(|_| !reminder.alarm_enabled)
+    {
         let label = if minutes == 1 {
             format!("Snooze {minutes} minute")
         } else {
@@ -635,7 +715,7 @@ fn show_reminder_notification(
 ) -> Result<(), String> {
     let body = if overdue {
         format!(
-            "{} — {}",
+            "{} ({})",
             reminder.title,
             format_overdue(reminder.scheduled_at, Utc::now().timestamp_millis())
         )
@@ -748,7 +828,7 @@ fn process_due_reminders(
     now: i64,
     missed: bool,
 ) {
-    let due = match claim_due_reminders(reminder_state, now, missed) {
+    let mut due = match claim_due_reminders(reminder_state, now, missed) {
         Ok(due) => due,
         Err(error) => {
             eprintln!("Could not save due reminders: {error}");
@@ -757,6 +837,29 @@ fn process_due_reminders(
     };
     if due.is_empty() {
         return;
+    }
+
+    // Alarms always get their own silent toast; their native audio is independent
+    // of delivery success, dismissal, summary notifications and global sound settings.
+    let alarms: Vec<_> = due
+        .iter()
+        .filter(|item| item.alarm_enabled)
+        .cloned()
+        .collect();
+    due.retain(|item| !item.alarm_enabled);
+    app.state::<AlarmState>().sync(reminder_state);
+    for reminder in &alarms {
+        if let Err(error) = show_reminder_notification(
+            app,
+            reminder_state.clone(),
+            sound_state.clone(),
+            snooze_state.clone(),
+            reminder,
+            NotificationSound::None,
+            missed,
+        ) {
+            eprintln!("Could not show alarm notification: {error}");
+        }
     }
 
     let _ = app.emit("reminders-changed", ());
@@ -823,6 +926,7 @@ fn start_scheduler(
 
         loop {
             thread::sleep(SCHEDULER_INTERVAL);
+            app.state::<AlarmState>().sync(&reminder_state);
             if prune_delivered(&reminder_state).unwrap_or(false) {
                 let _ = app.emit("reminders-changed", ());
             }
@@ -955,6 +1059,28 @@ pub fn run() {
                 app.path().resource_dir()?,
             );
             let snooze_state = SnoozeState::load(app_data_dir.join("snooze.json"));
+            let alarm_directory = app_data_dir.join("alarm-sounds");
+            fs::create_dir_all(alarm_directory.join("builtins"))?;
+            // Embedded sounds are also installed in app storage for playback.
+            for (name, bytes) in [
+                (
+                    "classic-alarm.wav",
+                    include_bytes!("../resources/sounds/classic-alarm.wav").as_slice(),
+                ),
+                (
+                    "digital-alarm.wav",
+                    include_bytes!("../resources/sounds/digital-alarm.wav").as_slice(),
+                ),
+                (
+                    "sunrise-alarm.wav",
+                    include_bytes!("../resources/sounds/sunrise-alarm.wav").as_slice(),
+                ),
+            ] {
+                fs::write(alarm_directory.join("builtins").join(name), bytes)?;
+            }
+            let alarm_state = AlarmState::start(app.handle().clone(), alarm_directory);
+            app.manage(alarm_state.clone());
+            alarm_state.sync(&reminder_state);
             app.manage(reminder_state.clone());
             app.manage(sound_state.clone());
             app.manage(snooze_state.clone());
@@ -1013,7 +1139,16 @@ pub fn run() {
             set_notification_sound,
             preview_notification_sound,
             get_snooze_durations,
-            set_snooze_durations
+            set_snooze_durations,
+            list_alarm_sounds,
+            import_alarm_sound,
+            preview_alarm_sound,
+            stop_alarm_preview,
+            get_alarm_audio_error,
+            get_alarm_sound,
+            set_alarm_sound,
+            remove_alarm_sound,
+            set_reminder_alarm
         ])
         .build(tauri::generate_context!())
         .expect("error while building Remind Me")
@@ -1041,6 +1176,8 @@ mod tests {
             completed: false,
             notified_at: None,
             missed_at: None,
+            alarm_enabled: false,
+            alarm_started_at: None,
         }
     }
 

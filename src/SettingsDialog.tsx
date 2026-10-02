@@ -3,6 +3,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import thirdPartyLicenses from "./generated/thirdPartyLicenses.json";
 import { CloseIcon } from "./icons";
+import { AlarmSettings } from "./AlarmSettings";
 import {
   MAX_SNOOZE_MINUTES,
   MIN_SNOOZE_MINUTES,
@@ -241,6 +242,8 @@ export function SettingsDialog({
               ))}
             </div>
           </fieldset>
+
+          <AlarmSettings />
 
           <fieldset className="settings-group">
             <legend>Notification sound</legend>

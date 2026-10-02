@@ -5,6 +5,8 @@ export type Reminder = {
   completed: boolean;
   notifiedAt: number | null;
   missedAt: number | null;
+  alarmEnabled?: boolean;
+  alarmStartedAt?: number | null;
 };
 
 export type DragPayload =

@@ -4,7 +4,9 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 import { autostartApi } from "./autostartApi";
 import { dragAutoScrollVelocity } from "./drag";
 import { loadDraft, saveDraft } from "./draft";
-import { CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
+import { AlarmIcon, CheckIcon, CloseIcon, GripIcon, SettingsIcon } from "./icons";
+import { alarmApi } from "./alarmApi";
+import { FeatureAnnouncement, shouldShowAlarmAnnouncement } from "./FeatureAnnouncement";
 import { reminderApi } from "./reminderApi";
 import { SettingsDialog } from "./SettingsDialog";
 import type { ManualUpdateStatus } from "./SettingsDialog";
@@ -19,7 +21,7 @@ import { updateApi } from "./updateApi";
 import type { AvailableUpdate } from "./updateApi";
 import "./styles.css";
 
-const REFRESH_INTERVAL = 15_000;
+const REFRESH_INTERVAL = 1_000;
 const UPDATE_CHECK_INTERVAL = 6 * 60 * 60 * 1_000;
 
 type PointerDrag = {
@@ -38,13 +40,14 @@ type DragPosition = {
   label: string;
 };
 
-function ReminderChip({ reminder, overdueLabel, onPointerDrag, onEdit, onComplete, onDelete }: {
+function ReminderChip({ reminder, overdueLabel, onPointerDrag, onEdit, onComplete, onDelete, onAlarm }: {
   reminder: Reminder;
   overdueLabel?: string;
   onPointerDrag: (event: ReactPointerEvent<HTMLElement>, payload: DragPayload, label: string) => void;
   onEdit: (reminder: Reminder) => void;
   onComplete: (id: string) => void;
   onDelete: (id: string) => void;
+  onAlarm: (reminder: Reminder) => void;
 }) {
   return (
     <div className="reminder-chip">
@@ -59,6 +62,12 @@ function ReminderChip({ reminder, overdueLabel, onPointerDrag, onEdit, onComplet
       <button className="chip-title" type="button" onClick={() => onEdit(reminder)} aria-label={`Edit ${reminder.title}`}>
         <span>{reminder.title}</span>
         {overdueLabel && <small>{overdueLabel}</small>}
+      </button>
+      <button className={`chip-action chip-alarm${reminder.alarmEnabled ? " is-enabled" : ""}`} type="button"
+        onClick={() => onAlarm(reminder)} aria-pressed={!!reminder.alarmEnabled}
+        aria-label={`${reminder.alarmEnabled ? "Disable" : "Enable"} alarm for ${reminder.title}`}
+        title={reminder.alarmEnabled ? "Alarm on. click to turn off" : "Turn on alarm"}>
+        <AlarmIcon size={16} />
       </button>
       <button className="chip-action" type="button" onClick={() => onComplete(reminder.id)} aria-label={`Complete ${reminder.title}`}>
         <CheckIcon size={16} />
@@ -81,6 +90,9 @@ export default function App() {
   const [message, setMessage] = useState("");
   const [settings, setSettings] = useState(loadSettings);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [announcementOpen, setAnnouncementOpen] = useState(shouldShowAlarmAnnouncement);
+  const [alarmError, setAlarmError] = useState<string | null>(null);
+  const [alarmSaving, setAlarmSaving] = useState<string | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<AvailableUpdate | null>(null);
   const [installingUpdate, setInstallingUpdate] = useState(false);
   const [manualUpdateStatus, setManualUpdateStatus] = useState<ManualUpdateStatus>("idle");
@@ -101,6 +113,25 @@ export default function App() {
   const previousSlotHeightsRef = useRef(new Map<number, number>());
 
   const timelineDuration = timelineDurationMinutes(settings.slotInterval);
+  const activeAlarms = useMemo(() => reminders.filter((reminder) => reminder.alarmStartedAt != null)
+    .sort((left, right) => left.scheduledAt - right.scheduledAt), [reminders]);
+
+  useEffect(() => {
+    if (activeAlarms.length) setAnnouncementOpen(false);
+    if (!reminderApi.isNative) void alarmApi.syncBrowser(reminders).catch((error) => setAlarmError(String(error.message ?? error)));
+  }, [reminders, activeAlarms.length]);
+
+  useEffect(() => {
+    if (!reminderApi.isNative) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const refreshAudio = () => void alarmApi.error().then((error) => { if (!disposed) setAlarmError(error); });
+    void listen("alarm-audio-changed", refreshAudio).then((stop) => {
+      if (disposed) stop();
+      else { unlisten = stop; refreshAudio(); }
+    });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     saveDraft({ title, editingReminder });
@@ -108,14 +139,14 @@ export default function App() {
 
   const missedReminders = useMemo(
     () => reminders
-      .filter((reminder) => !reminder.completed && reminder.missedAt != null)
+      .filter((reminder) => !reminder.completed && reminder.missedAt != null && reminder.alarmStartedAt == null)
       .sort((left, right) => left.scheduledAt - right.scheduledAt),
     [reminders],
   );
 
   const pendingTimestamps = useMemo(
     () => reminders
-      .filter((reminder) => !reminder.completed && reminder.missedAt == null)
+      .filter((reminder) => !reminder.completed && reminder.missedAt == null && reminder.alarmStartedAt == null)
       .map((reminder) => reminder.scheduledAt),
     [reminders],
   );
@@ -126,7 +157,7 @@ export default function App() {
   const remindersByTime = useMemo(() => {
     const map = new Map<number, Reminder[]>();
     for (const reminder of reminders) {
-      if (reminder.completed || reminder.missedAt != null) continue;
+      if (reminder.completed || reminder.missedAt != null || reminder.alarmStartedAt != null) continue;
       const group = map.get(reminder.scheduledAt);
       if (group) group.push(reminder);
       else map.set(reminder.scheduledAt, [reminder]);
@@ -432,6 +463,17 @@ export default function App() {
     }
   };
 
+  const toggleAlarm = async (reminder: Reminder) => {
+    if (alarmSaving) return;
+    setAlarmSaving(reminder.id);
+    try {
+      const updated = await reminderApi.setAlarm(reminder.id, !reminder.alarmEnabled);
+      setReminders((current) => current.map((item) => item.id === reminder.id ? updated : item));
+      setMessage(updated.alarmEnabled ? "Alarm on. rings until you stop it in the app" : "Alarm off");
+    } catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setAlarmSaving(null); }
+  };
+
   const changeNotificationSound = async (notificationSound: NotificationSound) => {
     if (soundSaving || notificationSound === settings.notificationSound) return;
     setSoundSaving(true);
@@ -554,7 +596,7 @@ export default function App() {
 
   return (
     <main
-      className={`app-shell${missedReminders.length ? " has-missed" : ""}${dragPosition ? " is-dragging" : ""}`}
+      className={`app-shell${missedReminders.length || activeAlarms.length ? " has-alerts" : ""}${dragPosition ? " is-dragging" : ""}`}
       onPointerMove={updatePointerDrag}
       onPointerUp={(event) => finishPointerDrag(event)}
       onPointerCancel={(event) => finishPointerDrag(event, true)}
@@ -624,6 +666,17 @@ export default function App() {
         </button>
       </section>
 
+      {(missedReminders.length > 0 || activeAlarms.length > 0) && <div className="reminder-alerts">
+      {activeAlarms.length > 0 && <section className="ringing-section" aria-labelledby="ringing-title">
+        <div className="ringing-heading"><AlarmIcon size={18} /><h2 id="ringing-title">Alarm ringing</h2></div>
+        <p>Open the app and stop each alarm. Closing this window keeps it ringing.</p>
+        {activeAlarms.map((reminder) => <div className="ringing-reminder" key={reminder.id}>
+          <div><strong>{reminder.title}</strong><small>{formatTime(reminder.scheduledAt)}</small></div>
+          <button type="button" onClick={() => void complete(reminder.id)} aria-label={`Stop alarm for ${reminder.title}`}>Stop alarm</button>
+        </div>)}
+        {activeAlarms.length > 1 && <p>Sounds play one at a time. Stop all alarms to silence them.</p>}
+        {alarmError && <p role="alert" className="alarm-error">{alarmError}</p>}
+      </section>}
       {missedReminders.length > 0 && (
         <section className="missed-section" aria-labelledby="missed-title">
           <div className="missed-heading">
@@ -640,12 +693,14 @@ export default function App() {
                 onEdit={beginEditingReminder}
                 onComplete={complete}
                 onDelete={remove}
+                onAlarm={toggleAlarm}
               />
             ))}
           </div>
           <p>Drag onto the timeline to reschedule.</p>
         </section>
       )}
+      </div>}
 
       <section className="timeline-section" aria-labelledby="timeline-title">
         <h2 id="timeline-title">Next {formatTimelineDuration(timelineDuration)}</h2>
@@ -673,6 +728,7 @@ export default function App() {
                         onEdit={beginEditingReminder}
                         onComplete={complete}
                         onDelete={remove}
+                        onAlarm={toggleAlarm}
                       />
                     ))}
                   </div>}
@@ -702,7 +758,8 @@ export default function App() {
           {dragPosition.label}
         </div>
       )}
-      {availableUpdate && (
+      {announcementOpen && <FeatureAnnouncement onClose={() => setAnnouncementOpen(false)} />}
+      {availableUpdate && !announcementOpen && activeAlarms.length === 0 && (
         <UpdateDialog
           version={availableUpdate.version}
           notes={availableUpdate.notes}

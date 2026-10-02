@@ -13,7 +13,9 @@ function readPreview(): Reminder[] {
     const reminders = (JSON.parse(saved) as Reminder[]).map((reminder) => {
       if (!reminder.completed && reminder.notifiedAt == null && reminder.missedAt == null && reminder.scheduledAt <= now) {
         changed = true;
-        return { ...reminder, notifiedAt: now, missedAt: now };
+        return reminder.alarmEnabled
+          ? { ...reminder, notifiedAt: now, alarmStartedAt: now }
+          : { ...reminder, notifiedAt: now, missedAt: now };
       }
       return reminder;
     });
@@ -50,6 +52,8 @@ export const reminderApi = {
       completed: false,
       notifiedAt: null,
       missedAt: null,
+      alarmEnabled: false,
+      alarmStartedAt: null,
     };
     writePreview([...reminders, reminder]);
     return reminder;
@@ -60,7 +64,7 @@ export const reminderApi = {
     let changed: Reminder | undefined;
     const reminders = readPreview().map((reminder) => {
       if (reminder.id !== id) return reminder;
-      changed = { ...reminder, scheduledAt, completed: false, notifiedAt: null, missedAt: null };
+      changed = { ...reminder, scheduledAt, completed: false, notifiedAt: null, missedAt: null, alarmStartedAt: null };
       return changed;
     });
     if (!changed) throw new Error("Reminder not found");
@@ -73,7 +77,7 @@ export const reminderApi = {
     let changed: Reminder | undefined;
     const reminders = readPreview().map((reminder) => {
       if (reminder.id !== id) return reminder;
-      changed = { ...reminder, title, scheduledAt, completed: false, notifiedAt: null, missedAt: null };
+      changed = { ...reminder, title, scheduledAt, completed: false, notifiedAt: null, missedAt: null, alarmStartedAt: null };
       return changed;
     });
     if (!changed) throw new Error("Reminder not found");
@@ -86,6 +90,20 @@ export const reminderApi = {
     const reminders = readPreview();
     if (!reminders.some((reminder) => reminder.id === id)) throw new Error("Reminder not found");
     writePreview(reminders.filter((reminder) => reminder.id !== id));
+  },
+
+  async setAlarm(id: string, enabled: boolean): Promise<Reminder> {
+    if (inTauri) return invoke<Reminder>("set_reminder_alarm", { id, enabled });
+    let changed: Reminder | undefined;
+    const reminders = readPreview().map((reminder) => {
+      if (reminder.id !== id) return reminder;
+      if (enabled && reminder.scheduledAt <= Date.now()) throw new Error("Reschedule this reminder before enabling an alarm");
+      changed = { ...reminder, alarmEnabled: enabled, alarmStartedAt: null };
+      return changed;
+    });
+    if (!changed) throw new Error("Reminder not found");
+    writePreview(reminders);
+    return changed;
   },
 
   async remove(id: string): Promise<void> {

@@ -1,5 +1,14 @@
 type IconProps = { size?: number; className?: string };
 
+export function AlarmIcon({ size = 18, className }: IconProps) {
+  return (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle cx="12" cy="13" r="7" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M12 9v4l2.5 1.5M4 5l3-2M20 5l-3-2M7 19l-1 2M17 19l1 2" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function GripIcon({ size = 24, className }: IconProps) {
   return (
     <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">

@@ -25,6 +25,18 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "alsa",
+    "version": "0.9.1",
+    "license": "Apache-2.0/MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "alsa-sys",
+    "version": "0.3.1",
+    "license": "MIT"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "android_system_properties",
     "version": "0.1.5",
     "license": "MIT/Apache-2.0"
@@ -39,6 +51,12 @@
     "ecosystem": "Cargo",
     "name": "arbitrary",
     "version": "1.4.2",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "arrayvec",
+    "version": "0.7.8",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -124,6 +142,12 @@
     "name": "atomic-write-file",
     "version": "0.3.0",
     "license": "BSD-3-Clause"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "auto-launch",
+    "version": "0.5.0",
+    "license": "MIT"
   },
   {
     "ecosystem": "Cargo",
@@ -325,6 +349,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "core_detect",
+    "version": "1.0.0",
+    "license": "MIT/Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "core-foundation",
     "version": "0.10.1",
     "license": "MIT OR Apache-2.0"
@@ -346,6 +376,18 @@
     "name": "core-graphics-types",
     "version": "0.2.0",
     "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "coreaudio-rs",
+    "version": "0.13.0",
+    "license": "MIT/Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "cpal",
+    "version": "0.16.0",
+    "license": "Apache-2.0"
   },
   {
     "ecosystem": "Cargo",
@@ -421,6 +463,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "dasp_sample",
+    "version": "0.11.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "dbus",
     "version": "0.9.12",
     "license": "Apache-2.0/MIT"
@@ -458,7 +506,19 @@
   {
     "ecosystem": "Cargo",
     "name": "dirs",
+    "version": "4.0.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "dirs",
     "version": "6.0.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "dirs-sys",
+    "version": "0.3.7",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -553,6 +613,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "encoding_rs",
+    "version": "0.8.42",
+    "license": "(Apache-2.0 OR MIT) AND BSD-3-Clause"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "endi",
     "version": "1.1.1",
     "license": "MIT"
@@ -598,6 +664,12 @@
     "name": "event-listener-strategy",
     "version": "0.5.4",
     "license": "Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "extended",
+    "version": "0.1.0",
+    "license": "MIT"
   },
   {
     "ecosystem": "Cargo",
@@ -1141,6 +1213,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "lazy_static",
+    "version": "1.5.1",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "libappindicator",
     "version": "0.9.0",
     "license": "Apache-2.0 OR MIT"
@@ -1207,6 +1285,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "mach2",
+    "version": "0.4.3",
+    "license": "BSD-2-Clause OR MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "markup5ever",
     "version": "0.38.0",
     "license": "MIT OR Apache-2.0"
@@ -1255,6 +1339,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "multiversion_no_op",
+    "version": "1.0.0",
+    "license": "Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "native-tls",
     "version": "0.2.18",
     "license": "MIT OR Apache-2.0"
@@ -1263,6 +1353,12 @@
     "ecosystem": "Cargo",
     "name": "ndk",
     "version": "0.9.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "ndk-context",
+    "version": "0.1.1",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -1303,8 +1399,32 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "num-bigint",
+    "version": "0.4.8",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "num-conv",
     "version": "0.2.2",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "num-derive",
+    "version": "0.4.2",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "num-integer",
+    "version": "0.1.47",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "num-rational",
+    "version": "0.4.2",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -1327,7 +1447,25 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "objc2-audio-toolbox",
+    "version": "0.3.2",
+    "license": "Zlib OR Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "objc2-cloud-kit",
+    "version": "0.3.2",
+    "license": "Zlib OR Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "objc2-core-audio",
+    "version": "0.3.2",
+    "license": "Zlib OR Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "objc2-core-audio-types",
     "version": "0.3.2",
     "license": "Zlib OR Apache-2.0 OR MIT"
   },
@@ -1700,6 +1838,12 @@
   {
     "ecosystem": "Cargo",
     "name": "redox_users",
+    "version": "0.4.6",
+    "license": "MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "redox_users",
     "version": "0.5.2",
     "license": "MIT"
   },
@@ -1737,6 +1881,12 @@
     "ecosystem": "Cargo",
     "name": "reqwest",
     "version": "0.13.4",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "rodio",
+    "version": "0.21.1",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -1945,6 +2095,12 @@
   },
   {
     "ecosystem": "Cargo",
+    "name": "simdutf8",
+    "version": "0.1.5",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
     "name": "siphasher",
     "version": "1.0.3",
     "license": "MIT/Apache-2.0"
@@ -2014,6 +2170,66 @@
     "name": "swift-rs",
     "version": "1.0.7",
     "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-bundle-flac",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-bundle-mp3",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-codec-pcm",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-codec-vorbis",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-core",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-format-ogg",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-format-riff",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-metadata",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "symphonia-utils-xiph",
+    "version": "0.5.5",
+    "license": "MPL-2.0"
   },
   {
     "ecosystem": "Cargo",
@@ -2103,6 +2319,12 @@
     "ecosystem": "Cargo",
     "name": "tauri-plugin",
     "version": "2.6.3",
+    "license": "Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "tauri-plugin-autostart",
+    "version": "2.5.1",
     "license": "Apache-2.0 OR MIT"
   },
   {
@@ -2630,6 +2852,12 @@
   {
     "ecosystem": "Cargo",
     "name": "windows",
+    "version": "0.54.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "windows",
     "version": "0.61.3",
     "license": "MIT OR Apache-2.0"
   },
@@ -2780,6 +3008,12 @@
   {
     "ecosystem": "Cargo",
     "name": "windows-core",
+    "version": "0.54.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "windows-core",
     "version": "0.61.2",
     "license": "MIT OR Apache-2.0"
   },
@@ -2823,6 +3057,12 @@
     "ecosystem": "Cargo",
     "name": "windows-numerics",
     "version": "0.2.0",
+    "license": "MIT OR Apache-2.0"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "windows-result",
+    "version": "0.1.2",
     "license": "MIT OR Apache-2.0"
   },
   {
@@ -2919,6 +3159,12 @@
     "ecosystem": "Cargo",
     "name": "winnow",
     "version": "1.0.4",
+    "license": "MIT"
+  },
+  {
+    "ecosystem": "Cargo",
+    "name": "winreg",
+    "version": "0.10.1",
     "license": "MIT"
   },
   {
@@ -3622,6 +3868,12 @@
     "name": "@tauri-apps/cli-win32-x64-msvc",
     "version": "2.11.4",
     "license": "Apache-2.0 OR MIT"
+  },
+  {
+    "ecosystem": "npm",
+    "name": "@tauri-apps/plugin-autostart",
+    "version": "2.5.1",
+    "license": "MIT OR Apache-2.0"
   },
   {
     "ecosystem": "npm",

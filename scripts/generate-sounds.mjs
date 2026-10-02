@@ -10,7 +10,7 @@ function writeWave(name, duration, sampleAt) {
   const sampleCount = Math.floor(sampleRate * duration);
   const pcm = Buffer.alloc(sampleCount * 2);
   const samples = Array.from({ length: sampleCount }, (_, index) => sampleAt(index / sampleRate));
-  const peak = Math.max(1, ...samples.map((sample) => Math.abs(sample)));
+  const peak = samples.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 1);
   samples.forEach((sample, index) => pcm.writeInt16LE(Math.round((sample / peak) * 24_000), index * 2));
 
   const header = Buffer.alloc(44);
@@ -53,4 +53,18 @@ writeWave("chime.wav", 0.85, (time) => chimeNotes.reduce((sum, frequency, index)
   return time < noteStart ? sum : sum + tone(time - noteStart, frequency, 6.2) * 0.7;
 }, 0));
 
-console.log(`Generated notification sounds in ${outputDirectory}`);
+writeWave("digital-alarm.wav", 2.4, (time) => {
+  const beat = time % 0.3;
+  if (time > 1.15 || beat > 0.16) return 0;
+  const envelope = Math.min(1, beat / 0.006, (0.16 - beat) / 0.012);
+  return Math.sin(2 * Math.PI * 880 * time) * envelope * 0.7;
+});
+
+const sunriseNotes = [523.25, 659.25, 783.99, 1046.5, 783.99, 659.25];
+writeWave("sunrise-alarm.wav", 4.8, (time) => sunriseNotes.reduce((sum, frequency, index) => {
+  const start = index * 0.48;
+  return time < start ? sum : sum + 0.45 * tone(time - start, frequency, 2.8)
+    + 0.12 * tone(time - start, frequency * 2, 5);
+}, 0));
+
+console.log(`Generated notification and alarm sounds in ${outputDirectory}`);
